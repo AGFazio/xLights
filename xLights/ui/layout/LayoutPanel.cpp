@@ -25,6 +25,7 @@
  //*)
 
 #include <wx/clipbrd.h>
+#include <wx/progdlg.h>
 #include <wx/propgrid/propgrid.h>
 #include <wx/propgrid/advprops.h>
 #include <wx/tglbtn.h>
@@ -44,6 +45,7 @@
 #include "ui/layout/LayoutPanel.h"
 #include "ui/layout/ModelPreview.h"
 #include "xLightsMain.h"
+#include "xLightsApp.h"
 #include "ui/model/ChannelLayoutDialog.h"
 #include "ui/setup/ControllerConnectionDialog.h"
 #include "ui/layout/ModelGroupPanel.h"
@@ -1396,8 +1398,8 @@ int LayoutPanel::AddModelToTree(Model *model, wxTreeListItem* parent, bool expan
     }
 
     wxTreeListItem item = TreeListViewModels->AppendItem(*parent, TreeModelName(model, fullName),
-                                                         LayoutUtils::GetModelTreeIcon(DisplayAsTypeToString(model->DisplayAs), LayoutUtils::GroupMode::Closed),
-                                                         LayoutUtils::GetModelTreeIcon(DisplayAsTypeToString(model->DisplayAs), LayoutUtils::GroupMode::Opened),
+                                                         LayoutUtils::GetModelTreeIcon(DisplayAsTypeToString(model->GetDisplayAs()), LayoutUtils::GroupMode::Closed),
+                                                         LayoutUtils::GetModelTreeIcon(DisplayAsTypeToString(model->GetDisplayAs()), LayoutUtils::GroupMode::Opened),
                                                          new ModelTreeData(model, nativeOrder, fullName));
 
     if (model->GetDisplayAs() != DisplayAsType::ModelGroup) {
@@ -1589,16 +1591,16 @@ void LayoutPanel::UpdateModelsForPreview(const std::string &group, LayoutGroup* 
                             // m->GroupSelected = true;
                             // m->Highlighted = true;
                         }
-                        if (m->DisplayAs == DisplayAsType::SubModel) {
+                        if (m->GetDisplayAs() == DisplayAsType::SubModel) {
                             if (mark_selected) {
                               //  prev_models.push_back(m);  // setting this causes exception when prev_models render finds a submodel
                             }
                         }
-                        else if (m->DisplayAs == DisplayAsType::ModelGroup) {
+                        else if (m->GetDisplayAs() == DisplayAsType::ModelGroup) {
                             ModelGroup *mg = (ModelGroup*)m;
                             if (mark_selected) {
                                 for (const auto& it3 : mg->Models()) {
-                                    if (it3->DisplayAs != DisplayAsType::ModelGroup) {
+                                    if (it3->GetDisplayAs() != DisplayAsType::ModelGroup) {
                                         if (selectedBaseObject == nullptr)
                                         {
                                             SelectModel(it3, false);
@@ -1924,7 +1926,7 @@ void LayoutPanel::BulkEditPixelStyle() {
     int style = 3;
     for (Model* model: modelsToEdit) {
         if (model != nullptr) {
-            style = std::min(model->transparency, style);
+            style = std::min(model->GetTransparency(), style);
         }
     }
 
@@ -1955,7 +1957,7 @@ void LayoutPanel::BulkEditTransparency() {
     int trans = 100;
     for (Model* model: modelsToEdit) {
         if (model != nullptr) {
-            trans = std::min(model->transparency, trans);
+            trans = std::min(model->GetTransparency(), trans);
         }
     }
     wxNumberEntryDialog dlg(this, "Choose the transparency",  "Transparency:", "Transparency", trans, 0, 100);
@@ -1982,7 +1984,7 @@ void LayoutPanel::BulkEditBlackTranparency() {
     int trans = 100;
     for (Model* model: modelsToEdit) {
         if (model != nullptr) {
-            trans = std::min(model->blackTransparency, trans);
+            trans = std::min(model->GetBlackTransparency(), trans);
         }
     }
     wxNumberEntryDialog dlg(this, "Choose the black transparency",  "Black Transparency:", "Black Transparency", trans, 0, 100);
@@ -3474,7 +3476,7 @@ void LayoutPanel::OnPreviewLeftDown(wxMouseEvent& event)
         m->AddHandle(modelPreview, event.GetX(), event.GetY());
         PolyLineModel* poly = dynamic_cast<PolyLineModel*>(m);
         poly->AddHandle();
-        m->InitModel();
+        m->Reinitialize();
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_RGBEFFECTS_CHANGE |
                                                       OutputModelManager::WORK_MODELS_CHANGE_REQUIRING_RERENDER |
                                                       OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewLeftDown");
@@ -3841,8 +3843,8 @@ static Model* GetXlightsModel(Model* model, std::string& last_model, xLightsFram
                 gdtf_doc.load_buffer(buf.data(), sz);
 
                 XmlSerialize::GdtfModelData gdtfData;
-                if (XmlSerialize::ParseGdtfDescriptionXml(gdtf_doc, xlights, cancelled, gdtfData)) {
-                    model = XmlSerialize::CreateDmxModelFromGdtfData(model, gdtfData, xlights);
+                if (XmlSerialize::ParseGdtfDescriptionXml(gdtf_doc, xlights->AllModels, xlights->GetUICallbacks(), cancelled, gdtfData)) {
+                    model = XmlSerialize::CreateDmxModelFromGdtfData(model, gdtfData, xlights->AllModels);
                 } else {
                     cancelled = true;
                 }
@@ -3862,7 +3864,7 @@ static Model* GetXlightsModel(Model* model, std::string& last_model, xLightsFram
         pugi::xml_node root = doc.document_element();
 
         model->SetStartChannel("1");
-        model = model->CreateDefaultModelFromSavedModelNode(model, modelPreview, root, xlights, cancelled);
+        model = model->CreateDefaultModelFromSavedModelNode(model, root, xlights->AllModels, cancelled);
 
         if (!cancelled)
             return model;
@@ -5033,7 +5035,7 @@ void LayoutPanel::OnPreviewRightDown(wxMouseEvent& event)
             wxMenu* mnuViewPoint = new wxMenu();
             for (int i = 0; i < xlights->viewpoint_mgr.GetNum3DCameras(); ++i)
             {
-                mnuViewPoint->Append(xlights->viewpoint_mgr.GetCamera3D(i)->GetMenuId(), xlights->viewpoint_mgr.GetCamera3D(i)->GetName());
+                mnuViewPoint->Append(ID_PREVIEW_CAMERA_LOAD_BASE + i, xlights->viewpoint_mgr.GetCamera3D(i)->GetName());
             }
             mnu.Append(ID_PREVIEW_VIEWPOINT3D, "Load ViewPoint", mnuViewPoint, "");
             mnuViewPoint->Connect(wxEVT_MENU, (wxObjectEventFunction)&LayoutPanel::OnPreviewModelPopup, nullptr, this);
@@ -5041,7 +5043,7 @@ void LayoutPanel::OnPreviewRightDown(wxMouseEvent& event)
             mnuViewPoint = new wxMenu();
             for (int i = 0; i < xlights->viewpoint_mgr.GetNum3DCameras(); ++i)
             {
-                mnuViewPoint->Append(xlights->viewpoint_mgr.GetCamera3D(i)->GetDeleteMenuId(), xlights->viewpoint_mgr.GetCamera3D(i)->GetName());
+                mnuViewPoint->Append(ID_PREVIEW_CAMERA_DELETE_BASE + i, xlights->viewpoint_mgr.GetCamera3D(i)->GetName());
             }
             mnu.Append(ID_PREVIEW_DELETEVIEWPOINT3D, "Delete ViewPoint", mnuViewPoint, "");
             mnuViewPoint->Connect(wxEVT_MENU, (wxObjectEventFunction)&LayoutPanel::OnPreviewModelPopup, nullptr, this);
@@ -5052,7 +5054,7 @@ void LayoutPanel::OnPreviewRightDown(wxMouseEvent& event)
             wxMenu* mnuViewPoint = new wxMenu();
             for (int i = 0; i < xlights->viewpoint_mgr.GetNum2DCameras(); ++i)
             {
-                mnuViewPoint->Append(xlights->viewpoint_mgr.GetCamera2D(i)->GetMenuId(), xlights->viewpoint_mgr.GetCamera2D(i)->GetName());
+                mnuViewPoint->Append(ID_PREVIEW_CAMERA_LOAD_BASE + i, xlights->viewpoint_mgr.GetCamera2D(i)->GetName());
             }
             mnu.Append(ID_PREVIEW_VIEWPOINT2D, "Load ViewPoint", mnuViewPoint, "");
             mnuViewPoint->Connect(wxEVT_MENU, (wxObjectEventFunction)&LayoutPanel::OnPreviewModelPopup, nullptr, this);
@@ -5060,7 +5062,7 @@ void LayoutPanel::OnPreviewRightDown(wxMouseEvent& event)
             mnuViewPoint = new wxMenu();
             for (int i = 0; i < xlights->viewpoint_mgr.GetNum2DCameras(); ++i)
             {
-                mnuViewPoint->Append(xlights->viewpoint_mgr.GetCamera2D(i)->GetDeleteMenuId(), xlights->viewpoint_mgr.GetCamera2D(i)->GetName());
+                mnuViewPoint->Append(ID_PREVIEW_CAMERA_DELETE_BASE + i, xlights->viewpoint_mgr.GetCamera2D(i)->GetName());
             }
             mnu.Append(ID_PREVIEW_DELETEVIEWPOINT2D, "Delete ViewPoint", mnuViewPoint, "");
             mnuViewPoint->Connect(wxEVT_MENU, (wxObjectEventFunction)&LayoutPanel::OnPreviewModelPopup, nullptr, this);
@@ -5312,7 +5314,13 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
         if (md == nullptr)
             return;
         XmlSerializer serializer;
-        serializer.SerializeAndSaveModel(md);
+        wxString name = md->GetName();
+        wxString filename = wxFileSelector(_("Choose output file"), wxEmptyString, name, wxEmptyString, "Custom Model files (*.xmodel)|*.xmodel", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+        if (!filename.IsEmpty()) {
+            ObtainAccessToURL(filename);
+            pugi::xml_document doc = serializer.SerializeModel(md, true);
+            doc.save_file(filename.ToStdString().c_str());
+        }
     } else if (event.GetId() == ID_PREVIEW_DELETE_ACTIVE) {
         DeleteCurrentPreview();
     } else if (event.GetId() == ID_PREVIEW_RENAME_ACTIVE) {
@@ -5324,7 +5332,7 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
         int handle = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(handle + 0x8000));
         md->InsertHandle(handle, modelPreview->GetCameraZoomForHandles(), modelPreview->GetHandleScale());
-        md->InitModel();
+        md->Reinitialize();
         // SetupPropGrid(md);
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_RELOAD_PROPERTYGRID |
                                                       OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_ADDPOINT");
@@ -5338,7 +5346,7 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
             md->DeleteHandle(selected_handle);
             md->SelectHandle(-1);
             md->GetModelScreenLocation().SelectSegment(-1);
-            md->InitModel();
+            md->Reinitialize();
             // SetupPropGrid(md);
             xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_RELOAD_PROPERTYGRID |
                                                           OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_DELETEPOINT");
@@ -5350,7 +5358,7 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
         int seg = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(seg + 0x2000));
         md->SetCurve(seg, true);
-        md->InitModel();
+        md->Reinitialize();
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_ADDCURVE");
     } else if (event.GetId() == ID_PREVIEW_MODEL_DELCURVE) {
         Model* md = dynamic_cast<Model*>(selectedBaseObject);
@@ -5359,7 +5367,7 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
         int seg = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(seg + 0x1000));
         md->SetCurve(seg, false);
-        md->InitModel();
+        md->Reinitialize();
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_DELCURVE");
     } else if (event.GetId() == ID_PREVIEW_MODEL_SET_SEGMENTS) {
         Model* md = dynamic_cast<Model*>(selectedBaseObject);
@@ -5373,7 +5381,7 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
         if (dlg.ShowModal() == wxID_OK) {
             int size = (int)std::strtol(dlg.GetValue().ToStdString().c_str(), nullptr, 10);
             pmd->SetSegmentSize(seg, size);
-            md->InitModel();
+            md->Reinitialize();
             xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_ADDCURVE");
         }
     } else if (event.GetId() == ID_PREVIEW_VIEWPOINT_DEFAULT) {
@@ -5396,35 +5404,29 @@ void LayoutPanel::OnPreviewModelPopup(wxCommandEvent& event)
             objects_panel->PreviewObjectFlipV();
         }
     } else if (is_3d) {
-        if (xlights->viewpoint_mgr.GetNum3DCameras() > 0) {
-            for (int i = 0; i < xlights->viewpoint_mgr.GetNum3DCameras(); ++i) {
-                if (event.GetId() == xlights->viewpoint_mgr.GetCamera3D(i)->GetMenuId()) {
-                    modelPreview->SetCamera3D(i);
-                    xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::3dCamera");
-                    break;
-                } else if (event.GetId() == xlights->viewpoint_mgr.GetCamera3D(i)->GetDeleteMenuId()) {
-                    std::string viewpointName = xlights->viewpoint_mgr.GetCamera3D(i)->GetName();
-                    wxString message = wxString::Format("Are you sure you want to delete the 3D viewpoint '%s'?\n\nThis action cannot be undone.", viewpointName);
-                    if (wxMessageBox(message, "Confirm Delete Viewpoint", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) == wxYES) {
-                        xlights->viewpoint_mgr.DeleteCamera3D(i);
-                    }
-                }
+        long loadIdx = event.GetId() - ID_PREVIEW_CAMERA_LOAD_BASE;
+        long deleteIdx = event.GetId() - ID_PREVIEW_CAMERA_DELETE_BASE;
+        if (loadIdx >= 0 && loadIdx < xlights->viewpoint_mgr.GetNum3DCameras()) {
+            modelPreview->SetCamera3D(loadIdx);
+            xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::3dCamera");
+        } else if (deleteIdx >= 0 && deleteIdx < xlights->viewpoint_mgr.GetNum3DCameras()) {
+            std::string viewpointName = xlights->viewpoint_mgr.GetCamera3D(deleteIdx)->GetName();
+            wxString message = wxString::Format("Are you sure you want to delete the 3D viewpoint '%s'?\n\nThis action cannot be undone.", viewpointName);
+            if (wxMessageBox(message, "Confirm Delete Viewpoint", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) == wxYES) {
+                xlights->viewpoint_mgr.DeleteCamera3D(deleteIdx);
             }
         }
     } else {
-        if (xlights->viewpoint_mgr.GetNum2DCameras() > 0) {
-            for (int i = 0; i < xlights->viewpoint_mgr.GetNum2DCameras(); ++i) {
-                if (event.GetId() == xlights->viewpoint_mgr.GetCamera2D(i)->GetMenuId()) {
-                    modelPreview->SetCamera2D(i);
-                    xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::2dCamera");
-                    break;
-                } else if (event.GetId() == xlights->viewpoint_mgr.GetCamera2D(i)->GetDeleteMenuId()) {
-                    std::string viewpointName = xlights->viewpoint_mgr.GetCamera2D(i)->GetName();
-                    wxString message = wxString::Format("Are you sure you want to delete the 2D viewpoint '%s'?\n\nThis action cannot be undone.", viewpointName);
-                    if (wxMessageBox(message, "Confirm Delete Viewpoint", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) == wxYES) {
-                        xlights->viewpoint_mgr.DeleteCamera2D(i);
-                    }
-                }
+        long loadIdx = event.GetId() - ID_PREVIEW_CAMERA_LOAD_BASE;
+        long deleteIdx = event.GetId() - ID_PREVIEW_CAMERA_DELETE_BASE;
+        if (loadIdx >= 0 && loadIdx < xlights->viewpoint_mgr.GetNum2DCameras()) {
+            modelPreview->SetCamera2D(loadIdx);
+            xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::2dCamera");
+        } else if (deleteIdx >= 0 && deleteIdx < xlights->viewpoint_mgr.GetNum2DCameras()) {
+            std::string viewpointName = xlights->viewpoint_mgr.GetCamera2D(deleteIdx)->GetName();
+            wxString message = wxString::Format("Are you sure you want to delete the 2D viewpoint '%s'?\n\nThis action cannot be undone.", viewpointName);
+            if (wxMessageBox(message, "Confirm Delete Viewpoint", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) == wxYES) {
+                xlights->viewpoint_mgr.DeleteCamera2D(deleteIdx);
             }
         }
     }
@@ -5467,7 +5469,7 @@ void LayoutPanel::EditSubmodels()
     }
     if (dlg.ReloadLayout) { //force grid to reload
         wxCommandEvent eventForceRefresh(EVT_FORCE_SEQUENCER_REFRESH);
-        wxPostEvent(md->GetModelManager().GetXLightsFrame(), eventForceRefresh);
+        wxPostEvent(xLightsApp::GetFrame(), eventForceRefresh);
         md->AddASAPWork(OutputModelManager::WORK_RELOAD_ALLMODELS |
                         OutputModelManager::WORK_MODELS_CHANGE_REQUIRING_RERENDER, "LayoutPanel::EditSubmodels");
     }
@@ -5510,8 +5512,8 @@ void LayoutPanel::EditModelData()
         return;
 
     md->SaveDisplayDimensions();
-    auto oldAutoSave = md->GetModelManager().GetXLightsFrame()->_suspendAutoSave;
-    md->GetModelManager().GetXLightsFrame()->_suspendAutoSave = true; // because we will tamper with model we need to suspend autosave
+    auto oldAutoSave = xLightsApp::GetFrame()->_suspendAutoSave;
+    xLightsApp::GetFrame()->_suspendAutoSave = true; // because we will tamper with model we need to suspend autosave
     CustomModelDialog dlg(this, &xlights->_outputManager);
     dlg.Setup(md);
     if (dlg.ShowModal() == wxID_OK) {
@@ -5521,9 +5523,9 @@ void LayoutPanel::EditModelData()
         md->AddASAPWork(OutputModelManager::WORK_RGBEFFECTS_CHANGE, "LayoutPanel::EditModelData");
     } else {
         md->RestoreDisplayDimensions();
-        md->GetModelManager().GetXLightsFrame()->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "CustomModel::CancelCustomData");
+        xLightsApp::GetFrame()->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "CustomModel::CancelCustomData");
     }
-    md->GetModelManager().GetXLightsFrame()->_suspendAutoSave = oldAutoSave;
+    xLightsApp::GetFrame()->_suspendAutoSave = oldAutoSave;
 }
 
 void LayoutPanel::ShowNodeLayout()
@@ -7844,7 +7846,13 @@ void LayoutPanel::OnModelsPopup(wxCommandEvent& event) {
         if (md == nullptr)
             return;
         XmlSerializer serializer;
-        serializer.SerializeAndSaveModel(md);
+        wxString name = md->GetName();
+        wxString filename = wxFileSelector(_("Choose output file"), wxEmptyString, name, wxEmptyString, "Custom Model files (*.xmodel)|*.xmodel", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+        if (!filename.IsEmpty()) {
+            ObtainAccessToURL(filename);
+            pugi::xml_document doc = serializer.SerializeModel(md, true);
+            doc.save_file(filename.ToStdString().c_str());
+        }
     } else if (event.GetId() == ID_PREVIEW_DELETE_ACTIVE) {
         DeleteCurrentPreview();
     } else if (event.GetId() == ID_PREVIEW_RENAME_ACTIVE) {
@@ -7856,7 +7864,7 @@ void LayoutPanel::OnModelsPopup(wxCommandEvent& event) {
         int handle = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(handle + 0x8000));
         md->InsertHandle(handle, modelPreview->GetCameraZoomForHandles(), modelPreview->GetHandleScale());
-        md->InitModel();
+        md->Reinitialize();
         //SetupPropGrid(md);
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_RELOAD_PROPERTYGRID |
                                                       OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_ADDPOINT");
@@ -7870,7 +7878,7 @@ void LayoutPanel::OnModelsPopup(wxCommandEvent& event) {
             md->DeleteHandle(selected_handle);
             md->SelectHandle(-1);
             md->GetModelScreenLocation().SelectSegment(-1);
-            md->InitModel();
+            md->Reinitialize();
             //SetupPropGrid(md);
             xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_RELOAD_PROPERTYGRID |
                                                           OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_DELETEPOINT");
@@ -7882,7 +7890,7 @@ void LayoutPanel::OnModelsPopup(wxCommandEvent& event) {
         int seg = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(seg + 0x2000));
         md->SetCurve(seg, true);
-        md->InitModel();
+        md->Reinitialize();
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_ADDCURVE");
     } else if (event.GetId() == ID_PREVIEW_MODEL_DELCURVE) {
         Model* md = dynamic_cast<Model*>(selectedBaseObject);
@@ -7891,7 +7899,7 @@ void LayoutPanel::OnModelsPopup(wxCommandEvent& event) {
         int seg = md->GetSelectedSegment();
         CreateUndoPoint("SingleModel", md->name, std::to_string(seg + 0x1000));
         md->SetCurve(seg, false);
-        md->InitModel();
+        md->Reinitialize();
         xlights->GetOutputModelManager()->AddASAPWork(OutputModelManager::WORK_REDRAW_LAYOUTPREVIEW, "LayoutPanel::OnPreviewModelPopup::ID_PREVIEW_MODEL_DELCURVE");
     } else if (event.GetId() == ID_PREVIEW_ALIGN_BOTTOM) {
         if (editing_models) {

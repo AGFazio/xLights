@@ -42,6 +42,7 @@
     <ClCompile Include="import_export\FileConverter.cpp" />
     <ClCompile Include="ui/shared/utils/FlickerFreeBitmapButton.cpp" />
     <ClCompile Include="ui/model/GenerateCustomModelDialog.cpp" />
+    <ClCompile Include="utils\AppCallbacks.cpp" />
     <ClCompile Include="utils\JobPool.cpp" />
     <ClCompile Include="ui/app-shell/KeyBindings.cpp" />
     <ClCompile Include="ui/layout/LayoutGroup.cpp" />
@@ -64,11 +65,11 @@
     </ClCompile>
     <ClCompile Include="ui/layout/PreviewPane.cpp" />
     <ClCompile Include="ui/sequencer/RenameTextDialog.cpp" />
-    <ClCompile Include="render\Render.cpp">
+    <ClCompile Include="render\RenderEngine.cpp">
       <Filter>render</Filter>
     </ClCompile>
-    <ClCompile Include="render\RenderUI.cpp">
-      <Filter>render</Filter>
+    <ClCompile Include="ui\render\RenderUI.cpp">
+      <Filter>ui\render</Filter>
     </ClCompile>
     <ClCompile Include="render\RenderBuffer.cpp">
       <Filter>render</Filter>
@@ -84,7 +85,7 @@
     <ClCompile Include="ui/import-export/SeqFileUtilities.cpp" />
     <ClCompile Include="ui/sequencer/SeqSettingsDialog.cpp" />
     <ClCompile Include="render/SequenceData.cpp" />
-    <ClCompile Include="ui/sequencer/SequenceViewManager.cpp" />
+    <ClCompile Include="render/SequenceViewManager.cpp" />
     <ClCompile Include="ui/model/SevenSegmentDialog.cpp" />
     <ClCompile Include="ui/app-shell/SplashDialog.cpp" />
     <ClCompile Include="ui/model/StartChannelDialog.cpp" />
@@ -100,6 +101,7 @@
     <ClCompile Include="ui/sequencer/TopEffectsPanel.cpp" />
     <ClCompile Include="ui/app-shell/UpdaterDialog.cpp" />
     <ClCompile Include="render\ValueCurve.cpp" />
+    <ClCompile Include="render\ValueCurveConsts.cpp" />
     <ClCompile Include="ui\ValueCurveButton.cpp" />
     <ClCompile Include="ui\ValueCurveDialog.cpp" />
     <ClCompile Include="ui\sequencer\VAMPPluginDialog.cpp" />
@@ -130,6 +132,9 @@
     <ClCompile Include="controllers\WebSocketClient.cpp" />
     <ClCompile Include="ui/sequencer/LayerSelectDialog.cpp" />
     <ClCompile Include="..\dependencies\md5\md5.cpp" />
+    <ClCompile Include="..\dependencies\libxlsxwriter\third_party\minizip\ioapi.c" />
+    <ClCompile Include="..\dependencies\libxlsxwriter\third_party\minizip\unzip.c" />
+    <ClCompile Include="..\dependencies\libxlsxwriter\third_party\minizip\zip.c" />
     <ClCompile Include="ui\import-export\VendorMusicDialog.cpp" />
     <ClCompile Include="VendorMusicHelpers.cpp" />
     <ClCompile Include="ui/media/JukeboxPanel.cpp" />
@@ -138,7 +143,7 @@
     <ClCompile Include="effects/OpenGLShaders.cpp" />
     <ClCompile Include="ui\shared\utils\xlLockButton.cpp" />
     <ClCompile Include="ui/model/ViewpointDialog.cpp" />
-    <ClCompile Include="ui/layout/ViewpointMgr.cpp" />
+    <ClCompile Include="render\ViewpointMgr.cpp" />
     <ClCompile Include="ui/sequencer/LyricUserDictDialog.cpp" />
     <ClCompile Include="render\RenderCache.cpp">
       <Filter>render</Filter>
@@ -732,9 +737,6 @@
     <ClCompile Include="ui/layout/LORPreview.cpp" />
     <ClCompile Include="ui/import-export/ExportSettings.cpp" />
     <ClCompile Include="render\GPURenderUtils.cpp" />
-    <ClCompile Include="ui\graphics\opengl\DrawGLUtils.cpp">
-      <Filter>ui\graphics\opengl</Filter>
-    </ClCompile>
     <ClCompile Include="ui\graphics\opengl\xlGLCanvas.cpp">
       <Filter>ui\graphics\opengl</Filter>
     </ClCompile>
@@ -743,6 +745,9 @@
     </ClCompile>
     <ClCompile Include="graphics\xlFontInfo.cpp" />
     <ClCompile Include="ui/automation/ScriptsDialog.cpp" />
+    <ClCompile Include="graphics\GLContextManager.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\xlMesh.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -1105,6 +1110,7 @@
       <Filter>Models\DMX</Filter>
     </ClCompile>
     <ClCompile Include="ui/media/ManageMediaPanel.cpp" />
+    <ClCompile Include="ui/media/ShaderPreviewGenerator.cpp" />
     <ClCompile Include="..\dependencies\pugixml\src\pugixml.cpp" />
     <ClCompile Include="XmlSerializer\GdtfParser.cpp" />
     <ClCompile Include="ai\Gemini.cpp">
@@ -1481,6 +1487,7 @@
     <ClInclude Include="ui/shared/utils/FlickerFreeBitmapButton.h" />
     <ClInclude Include="ui/model/GenerateCustomModelDialog.h" />
     <ClInclude Include="Images_png.h" />
+    <ClInclude Include="utils\AppCallbacks.h" />
     <ClInclude Include="utils\JobPool.h" />
     <ClInclude Include="ui/app-shell/KeyBindings.h" />
     <ClInclude Include="ui/layout/LayoutGroup.h" />
@@ -1518,7 +1525,7 @@
     <ClInclude Include="ui\import-export\SeqExportDialog.h" />
     <ClInclude Include="ui/sequencer/SeqSettingsDialog.h" />
     <ClInclude Include="render/SequenceData.h" />
-    <ClInclude Include="ui/sequencer/SequenceViewManager.h" />
+    <ClInclude Include="render/SequenceViewManager.h" />
     <ClInclude Include="ui/model/SevenSegmentDialog.h" />
     <ClInclude Include="ui/app-shell/SplashDialog.h" />
     <ClInclude Include="ui/model/StartChannelDialog.h" />
@@ -1531,6 +1538,7 @@
     <ClInclude Include="ui/app-shell/UpdaterDialog.h" />
     <ClInclude Include="utils\UtilClasses.h" />
     <ClInclude Include="render\ValueCurve.h" />
+    <ClInclude Include="render\ValueCurveConsts.h" />
     <ClInclude Include="ui\ValueCurveButton.h" />
     <ClInclude Include="ui\ValueCurveDialog.h" />
     <ClInclude Include="ui\sequencer\VAMPPluginDialog.h" />
@@ -1573,7 +1581,7 @@
     <ClInclude Include="effects/OpenGLShaders.h" />
     <ClInclude Include="ui\shared\utils\xlLockButton.h" />
     <ClInclude Include="ui/model/ViewpointDialog.h" />
-    <ClInclude Include="ui/layout/ViewpointMgr.h" />
+    <ClInclude Include="render\ViewpointMgr.h" />
     <ClInclude Include="ui/sequencer/LyricUserDictDialog.h" />
     <ClInclude Include="render\RenderCache.h">
       <Filter>render</Filter>
@@ -2178,9 +2186,6 @@
     <ClInclude Include="models\Pixels.h" />
     <ClInclude Include="ui/layout/LORPreview.h" />
     <ClInclude Include="ui/import-export/ExportSettings.h" />
-    <ClInclude Include="graphics\opengl\DrawGLUtils.h">
-      <Filter>graphics\opengl</Filter>
-    </ClInclude>
     <ClInclude Include="graphics\opengl\xlGLCanvas.h">
       <Filter>graphics\opengl</Filter>
     </ClInclude>
@@ -2537,6 +2542,9 @@
     <ClInclude Include="XmlSerializer\XmlDeserializingObjectFactory.h">
       <Filter>XmlSerializer</Filter>
     </ClInclude>
+    <ClInclude Include="XmlSerializer\LayoutGroupData.h">
+      <Filter>XmlSerializer</Filter>
+    </ClInclude>
     <ClInclude Include="XmlSerializer\XmlNodeKeys.h">
       <Filter>XmlSerializer</Filter>
     </ClInclude>
@@ -2566,6 +2574,7 @@
       <Filter>Models\DMX</Filter>
     </ClInclude>
     <ClInclude Include="ui/media/ManageMediaPanel.h" />
+    <ClInclude Include="ui/media/ShaderPreviewGenerator.h" />
     <ClInclude Include="XmlSerializer\GdtfParser.h" />
     <ClInclude Include="ai\gemini.h">
       <Filter>ai</Filter>

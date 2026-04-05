@@ -11,16 +11,16 @@
 // UI event handlers and UI-coupled render orchestration — separated from the
 // platform-neutral render engine in Render.cpp.
 
-#include "xLightsMain.h"
-#include "IRenderProgressSink.h"
-#include "RenderProgressInfo.h"
-#include "ui/sequencer/RenderCommandEvent.h"
-#include "ui/sequencer/MainSequencer.h"
-#include "../ui/diagnostics/RenderProgressDialog.h"
-#include "ui/import-export/SeqExportDialog.h"
-#include "utils/ExternalHooks.h"
-#include "UtilFunctions.h"
-#include "models/ModelGroup.h"
+#include "../../xLightsMain.h"
+#include "../../render/IRenderProgressSink.h"
+#include "../../render/RenderProgressInfo.h"
+#include "../sequencer/RenderCommandEvent.h"
+#include "../sequencer/MainSequencer.h"
+#include "../diagnostics/RenderProgressDialog.h"
+#include "../import-export/SeqExportDialog.h"
+#include "../../utils/ExternalHooks.h"
+#include "../../utils/UtilFunctions.h"
+#include "../../models/ModelGroup.h"
 
 #include <log.h>
 
@@ -75,21 +75,59 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// IRenderJobCallbacks — xLightsFrame implementations
-// These are scheduled onto the main thread via CallAfter from render threads.
+// AbortRender — uses wxYield, must be in UI layer
 // ---------------------------------------------------------------------------
 
-void xLightsFrame::OnRenderJobComplete(const std::string& modelName)
-{
-    // Called from a background render thread: schedule status update on main thread.
-    CallAfter(&xLightsFrame::SetStatusText,
-              wxString("Done Rendering \"" + modelName + "\""), 0);
+bool xLightsFrame::AbortRender(int maxTimeMS) {
+    return AbortRender(maxTimeMS, nullptr);
 }
 
-void xLightsFrame::OnAllRenderJobsComplete()
-{
-    // Called from a background render thread when the last job in a group finishes.
-    CallAfter(&xLightsFrame::RenderDone);
+bool xLightsFrame::AbortRender(int maxTimeMS, int* numThreadsAborted) {
+    static bool inAbort = false;
+    if (_renderEngine->IsRenderDone()) {
+        return true;
+    }
+    if (inAbort) {
+        return false;
+    }
+    inAbort = true;
+    spdlog::info("Aborting rendering ...");
+    _renderEngine->SignalAbort();
+
+    int maxLoops = maxTimeMS / 10;
+    int loops = 0;
+    while (!_renderEngine->IsRenderDone() && loops < maxLoops) {
+        loops++;
+        _renderEngine->RenderMainThreadEffects();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        UpdateRenderStatus();
+        if (!_renderEngine->IsRenderDone() && loops > 25) {
+            wxYield();
+        }
+        if (loops % 200 == 0) {
+            spdlog::info("    Waiting for renderers to abort. {} left.", (int)_renderEngine->GetRenderProgressInfo().size());
+        }
+    }
+    spdlog::info("    Aborting renderers ... Done");
+    inAbort = false;
+    if (numThreadsAborted != nullptr) {
+        *numThreadsAborted = _renderEngine->GetAbortedRenderJobs();
+    }
+    return _renderEngine->IsRenderDone();
+}
+
+// ---------------------------------------------------------------------------
+// RenderContext overrides — delegate to RenderEngine
+// ---------------------------------------------------------------------------
+
+void xLightsFrame::RenderMainThreadEffects() {
+    _renderEngine->RenderMainThreadEffects();
+}
+
+void xLightsFrame::RenderEffectForModel(const std::string &model, int startms, int endms, bool clear) {
+    _renderEngine->RenderEffectForModel(model, startms, endms,
+                                        _sequenceElements, _seqData,
+                                        _suspendRender, modelsChangeCount, clear);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +144,7 @@ void xLightsFrame::RenderRange(RenderCommandEvent& evt)
             RenderTimeSlice(evt.start, evt.end, evt.clear);
         } else {
             if (!_suspendRender)
-                RenderDirtyModels();
+                _renderEngine->RenderDirtyModels(_sequenceElements, _seqData, _suspendRender, modelsChangeCount);
         }
     } else {
         if (!_suspendRender)
@@ -129,10 +167,10 @@ void xLightsFrame::RenderDone()
 
 void xLightsFrame::OnProgressBarDoubleClick(wxMouseEvent& /*evt*/)
 {
-    if (renderProgressInfo.empty()) {
+    if (_renderEngine->GetRenderProgressInfo().empty()) {
         return;
     }
-    for (auto it : renderProgressInfo) {
+    for (auto it : _renderEngine->GetRenderProgressInfo()) {
         if (it->progressSink) {
             it->progressSink->Show();
             return;
@@ -147,14 +185,14 @@ void xLightsFrame::OnRenderStatusTimerTrigger(wxTimerEvent& /*event*/)
 
 void xLightsFrame::UpdateRenderStatus()
 {
-    if (renderProgressInfo.empty()) {
+    if (_renderEngine->GetRenderProgressInfo().empty()) {
         RenderStatusTimer.Stop();
         return;
     }
 
     RenderMainThreadEffects();
 
-    for (auto it = renderProgressInfo.begin(); it != renderProgressInfo.end();) {
+    for (auto it = _renderEngine->GetRenderProgressInfo().begin(); it != _renderEngine->GetRenderProgressInfo().end();) {
         int countModels = 0;
         int countFrames = 0;
 
@@ -217,10 +255,10 @@ void xLightsFrame::UpdateRenderStatus()
             _appProgress->SetValue(0);
             _appProgress->Reset();
             RenderDone();
-            rpi->callback(abortedRenderJobs > 0);
+            rpi->callback(_renderEngine->GetAbortedRenderJobs() > 0);
             delete rpi;
             rpi = nullptr;
-            it = renderProgressInfo.erase(it);
+            it = _renderEngine->GetRenderProgressInfo().erase(it);
         } else {
             ++it;
         }
@@ -230,9 +268,9 @@ void xLightsFrame::UpdateRenderStatus()
 void xLightsFrame::LogRenderStatus()
 {
     spdlog::debug("Logging render status ***************");
-    spdlog::debug("Render tree size. {} entries.", renderTree.data.size());
+    spdlog::debug("Render tree size. {} entries.", _renderEngine->GetRenderTree().data.size());
     spdlog::debug("Render Thread status:\n{}", (const char*)GetThreadStatusReport().c_str());
-    for (const auto& it : renderProgressInfo) {
+    for (const auto& it : _renderEngine->GetRenderProgressInfo()) {
         int frames = it->endFrame - it->startFrame + 1;
         spdlog::debug("Render progress rows {}, start frame {}, end frame {}, frames {}.", it->numRows, it->startFrame, it->endFrame, frames);
         for (int i = 0; i < it->numRows; i++) {
@@ -264,21 +302,21 @@ void xLightsFrame::LogRenderStatus()
 
 void xLightsFrame::RenderGridToSeqData(std::function<void(bool)>&& callback)
 {
-    BuildRenderTree();
-    if (renderTree.data.empty()) {
+    _renderEngine->BuildRenderTree(_sequenceElements, modelsChangeCount);
+    if (_renderEngine->GetRenderTree().data.empty()) {
         callback(false);
         return;
     }
 
-    spdlog::debug("Render tree built. {} entries.", renderTree.data.size());
+    spdlog::debug("Render tree built. {} entries.", _renderEngine->GetRenderTree().data.size());
 
     const int numRows = _sequenceElements.GetElementCount();
     if (numRows == 0) {
         callback(false);
         return;
     }
-    std::list<Model*> models = renderTree.GetModels();
-    for (auto it : renderProgressInfo) {
+    std::list<Model*> models = _renderEngine->GetRenderTree().GetModels();
+    for (auto it : _renderEngine->GetRenderProgressInfo()) {
         for (size_t row = 0; row < (size_t)it->numRows; ++row) {
             if (it->jobs[row]) {
                 it->jobs[row]->AbortRender();
@@ -291,19 +329,19 @@ void xLightsFrame::RenderGridToSeqData(std::function<void(bool)>&& callback)
 
 #ifdef DOTIMING
     auto sw = std::chrono::steady_clock::now();
-    Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
+    _renderEngine->Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
            std::make_unique<WxRenderProgressSink>(this), false,
            [this, models, restricts, sw, callback](bool) {
                printf("%s  Render 1:  %lld ms\n", xlightsFilename.c_str(),
                       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw).count());
                auto sw2 = std::chrono::steady_clock::now();
-               Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
+               _renderEngine->Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
                       std::make_unique<WxRenderProgressSink>(this), false,
                       [this, models, restricts, sw2, callback](bool) {
                           printf("%s  Render 2:  %lld ms\n", xlightsFilename.c_str(),
                                  std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw2).count());
                           auto sw3 = std::chrono::steady_clock::now();
-                          Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
+                          _renderEngine->Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
                                  std::make_unique<WxRenderProgressSink>(this), false,
                                  [this, sw3, callback](bool aborted) {
                                      printf("%s  Render 3:  %lld ms\n", xlightsFilename.c_str(),
@@ -313,7 +351,7 @@ void xLightsFrame::RenderGridToSeqData(std::function<void(bool)>&& callback)
                       });
            });
 #else
-    Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
+    _renderEngine->Render(_sequenceElements, _seqData, models, restricts, 0, _seqData.NumFrames() - 1,
            std::make_unique<WxRenderProgressSink>(this), false, std::move(callback));
 #endif
 }
@@ -324,18 +362,18 @@ void xLightsFrame::RenderGridToSeqData(std::function<void(bool)>&& callback)
 
 void xLightsFrame::RenderTimeSlice(int startms, int endms, bool clear)
 {
-    BuildRenderTree();
+    _renderEngine->BuildRenderTree(_sequenceElements, modelsChangeCount);
     spdlog::debug("Render tree built for time slice {}ms-{}ms. {} entries.",
-                  startms, endms, renderTree.data.size());
+                  startms, endms, _renderEngine->GetRenderTree().data.size());
 
-    if (renderTree.data.empty()) {
+    if (_renderEngine->GetRenderTree().data.empty()) {
         return;
     }
     const int numRows = _sequenceElements.GetElementCount();
     if (numRows == 0) {
         return;
     }
-    std::list<Model*> models = renderTree.GetModels();
+    std::list<Model*> models = _renderEngine->GetRenderTree().GetModels();
     std::list<Model*> restricts;
     if (startms < 0) startms = 0;
     if (endms < 0)   endms   = 0;
@@ -356,7 +394,7 @@ void xLightsFrame::RenderTimeSlice(int startms, int endms, bool clear)
     _appProgress->Reset();
 
     auto sw = std::chrono::steady_clock::now();
-    Render(_sequenceElements, _seqData, models, restricts, startframe, endframe,
+    _renderEngine->Render(_sequenceElements, _seqData, models, restricts, startframe, endframe,
            std::make_unique<WxRenderProgressSink>(this), clear,
            [this, sw](bool /*aborted*/) {
                spdlog::info("   Effects done.");
@@ -377,8 +415,113 @@ void xLightsFrame::RenderTimeSlice(int startms, int endms, bool clear)
 }
 
 // ---------------------------------------------------------------------------
+// DoExportModel — extract model data via RenderEngine and write to file
+// ---------------------------------------------------------------------------
+
+bool xLightsFrame::DoExportModel(unsigned int startFrame, unsigned int endFrame,
+                                  const std::string& model, const std::string& fn,
+                                  const std::string& fmt, bool doRender)
+{
+    if (endFrame == 0)
+        endFrame = _seqData.NumFrames();
+
+    Model* m = GetModel(model);
+    if (m == nullptr)
+        return false;
+
+    if (m->GetDisplayAs() == DisplayAsType::ModelGroup)
+        return false;
+
+    std::string filename(fn);
+    std::string format(fmt);
+
+    auto sw = std::chrono::steady_clock::now();
+    std::string Out3 = format.substr(0, 3);
+
+    if (Out3 == "LSP") {
+        filename = filename + "_USER";
+    }
+    std::filesystem::path oName(filename);
+
+    if (oName.parent_path().empty()) {
+        oName = std::filesystem::path(CurrentDir.ToStdString()) / oName.filename();
+    }
+    std::string fullpath;
+
+    SetStatusText(std::format("Starting Export for {} - {}", format, Out3));
+    wxYield();
+
+    if (doRender) {
+        RenderAll();
+        while (mRendering) {
+            wxYield();
+        }
+    }
+
+    auto exported = _renderEngine->ExportModelData(model, _seqData);
+    if (!exported.data)
+        return false;
+
+    SequenceData* data = exported.data.get();
+    int cpn = exported.chansPerNode;
+
+    if (Out3 == "Lcb") {
+        oName.replace_extension(".lcb");
+        fullpath = oName.string();
+        int lcbVer = 1;
+        if (format.find("S5") != std::string::npos) {
+            lcbVer = 2;
+        }
+        WriteLcbFile(fullpath, data->NumChannels(), startFrame, endFrame, data, lcbVer, cpn);
+    } else if (Out3 == "Vir") {
+        oName.replace_extension(".vir");
+        fullpath = oName.string();
+        WriteVirFile(fullpath, data->NumChannels(), startFrame, endFrame, data);
+    } else if (Out3 == "LSP") {
+        oName.replace_extension(".xml");
+        fullpath = oName.string();
+        WriteLSPFile(fullpath, data->NumChannels(), startFrame, endFrame, data, cpn);
+    } else if (Out3 == "HLS") {
+        oName.replace_extension(".hlsnc");
+        fullpath = oName.string();
+        WriteHLSFile(fullpath, data->NumChannels(), startFrame, endFrame, data);
+    } else if (Out3 == "FPP") {
+        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
+        oName.replace_extension(".eseq");
+        fullpath = oName.string();
+        bool v2 = format.find("Compressed") != std::string::npos;
+        WriteFalconPiModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), v2);
+    } else if (Out3 == "Com") {
+        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
+        oName.replace_extension(".mp4");
+        fullpath = oName.string();
+        WriteVideoModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), true);
+    } else if (Out3 == "Unc") {
+        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
+        fullpath = oName.string();
+        WriteVideoModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), false);
+    } else if (Out3 == "Min") {
+        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
+        oName.replace_extension(".bin");
+        fullpath = oName.string();
+        WriteMinleonNECModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model));
+    } else if (Out3 == "GIF") {
+        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
+        oName.replace_extension(".gif");
+        fullpath = oName.string();
+        WriteGIFModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), _seqData.FrameTime());
+    }
+    float s = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw).count();
+    s /= 1000;
+    SetStatusText(std::format("Finished writing model: {} in {:.3f}s ", fullpath, s));
+
+    EnableSequenceControls(true);
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // ExportModel — UI dialog + export dispatch
-// (DoExportModel is in Render.cpp — it uses RenderJob internals directly)
 // ---------------------------------------------------------------------------
 
 void xLightsFrame::ExportModel(wxCommandEvent& command)

@@ -11,7 +11,7 @@
  **************************************************************/
 
 #include "DataLayer.h"
-#include "../import_export/Vixen3.h"
+#include "JukeboxButtonData.h"
 #include "pugixml.hpp"
 
 #include <array>
@@ -23,8 +23,6 @@
 class SequenceElements;
 class RenderContext;
 class UICallbacks;
-class xLightsFrame;
-class wxWindow;
 class AudioManager;
 class EffectLayer;
 
@@ -139,11 +137,10 @@ public:
     void ProcessXLightsTiming(const std::vector<std::string>& filenames, RenderContext* renderContext);
     void ProcessVixen3Timing(const std::vector<std::string>& filenames, RenderContext* renderContext);
     void ProcessElevenLabsTimingFiles(const std::vector<std::string>& filenames, RenderContext* xLightsParent);
-    static void AddMarksToLayer(const std::list<VixenTiming>& marks, EffectLayer* effectLayer, int frameMS);
     std::string UniqueTimingName(RenderContext* renderContext, std::string name) const;
     void UpdateVersion();
     void UpdateVersion(const std::string& version);
-    void AdjustEffectSettingsForVersion(SequenceElements& elements, xLightsFrame* xLightsParent);
+    void AdjustEffectSettingsForVersion(SequenceElements& elements, RenderContext* ctx);
 
     bool IsOpen() const { return is_open; }
     bool HasAudioMedia() const { return audio != nullptr; }
@@ -161,6 +158,10 @@ public:
 
     bool supportsModelBlending() const { return supports_model_blending; }
     void setSupportsModelBlending(bool b) { supports_model_blending = b; }
+
+    // Jukebox button data (sequence-owned, UI syncs from here)
+    JukeboxButtonMap& GetJukeboxButtons() { return _jukeboxButtons; }
+    const JukeboxButtonMap& GetJukeboxButtons() const { return _jukeboxButtons; }
 
     int GetLastView() const { return mLastView; }
 
@@ -185,6 +186,7 @@ private:
     bool sequence_loaded = false;
     DataLayerSet mDataLayers;
     AudioManager* audio = nullptr;
+    JukeboxButtonMap _jukeboxButtons;
 
     void CreateNew();
     std::optional<pugi::xml_document> LoadSequence(const std::string& ShowDir, bool ignore_audio, const std::string& realFilePath);

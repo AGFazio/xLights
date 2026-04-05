@@ -16,8 +16,7 @@
 #include "SequenceElements.h"
 #include "pugixml.hpp"
 #include "RenderUtils.h"
-#include "../ui/sequencer/TimeLine.h"
-#include "../xLightsMain.h"
+#include "RenderContext.h"
 #include "SequenceFile.h"
 #include "../effects/RenderableEffect.h"
 #include "../models/SubModel.h"
@@ -25,8 +24,8 @@
 #include "UtilFunctions.h"
 #include "../utils/DisplayMessages.h"
 #include "../utils/string_utils.h"
-#include "ui/sequencer/SequenceViewManager.h"
-#include "ui/media/JukeboxPanel.h"
+#include "render/SequenceViewManager.h"
+#include "JukeboxButtonData.h"
 #include "../utils/TraceLog.h"
 
 #include <log.h>
@@ -53,11 +52,7 @@ SequenceElements::SequenceElements(RenderContext *ctx)
     mAllViews.push_back(master_view); // first view must remain as master view that determines render order
     hasPapagayoTiming = false;
     supportsModelBlending = true;
-    _timeLine = nullptr;
-}
-
-xLightsFrame* SequenceElements::GetXLightsFrame() const {
-    return dynamic_cast<xLightsFrame*>(renderContext);
+    _tagPositions.fill(-1);
 }
 
 SequenceElements::~SequenceElements()
@@ -96,10 +91,7 @@ void SequenceElements::Clear() {
     std::vector <Element*> master_view;
     mAllViews.push_back(master_view);
     hasPapagayoTiming = false;
-    if (GetTimeLine() != nullptr)
-    {
-        GetTimeLine()->ClearTags();
-    }
+    ClearTags();
 }
 
 void SequenceElements::SetSequenceEnd(int ms)
@@ -759,8 +751,8 @@ bool SequenceElements::LoadSequencerFile(SequenceFile& xml_file, pugi::xml_docum
             for (auto tag : e.children("Tag")) {
                 int number = tag.attribute("number").as_int(-1);
                 int position = tag.attribute("position").as_int(-1);
-                if (number != -1 && GetTimeLine() != nullptr) {
-                    GetTimeLine()->SetTagPosition(number, position, false);
+                if (number != -1) {
+                    SetTagPosition(number, position);
                 }
             }
         } else if (ename == "EffectDB") {
@@ -780,9 +772,7 @@ bool SequenceElements::LoadSequencerFile(SequenceFile& xml_file, pugi::xml_docum
         } else if (ename == "SequenceMedia") {
             mSequenceMedia.LoadFromXml(e);
         } else if (ename == "Jukebox") {
-            if (auto* frame = GetXLightsFrame()) {
-                frame->GetJukeboxPanel()->Load(e);
-            }
+            LoadJukeboxButtons(e, xml_file.GetJukeboxButtons());
         } else if (ename == "ElementEffects") {
             // Count effects for progress
             int count = 0;
@@ -867,8 +857,8 @@ bool SequenceElements::LoadSequencerFile(SequenceFile& xml_file, pugi::xml_docum
                                 }
                                 loaded += LoadEffects(effectLayer, elemType, effectLayerNode, effectStrings, colorPalettes, importing);
                                 if (count) {
-                                    if (auto* frame = GetXLightsFrame()) {
-                                        frame->SetStatusText(std::format("Effects Loaded: {}%.", loaded * 100 / count));
+                                    if (renderContext) {
+                                        renderContext->SetLoadingStatusText(std::format("Effects Loaded: {}%.", loaded * 100 / count));
                                     }
                                 }
                             } else {
@@ -1441,11 +1431,11 @@ int SequenceElements::GetNumberOfActiveTimingEffects()
 
 void SequenceElements::DeactivateAllTimingElements()
 {
-    for(size_t i=0;i<mAllViews[mCurrentView].size();i++)
+    for(size_t i=0;i<mAllViews[MASTER_VIEW].size();i++)
     {
-        if(mAllViews[mCurrentView][i]->GetType()== ElementType::ELEMENT_TYPE_TIMING)
+        if(mAllViews[MASTER_VIEW][i]->GetType()== ElementType::ELEMENT_TYPE_TIMING)
         {
-            dynamic_cast<TimingElement*>(mAllViews[mCurrentView][i])->SetActive(false);
+            dynamic_cast<TimingElement*>(mAllViews[MASTER_VIEW][i])->SetActive(false);
         }
     }
 }
@@ -2116,8 +2106,8 @@ void SequenceElements::IncrementChangeCount(Element *el) {
                 if (el2 != nullptr) {
                     el2->IncrementChangeCount(ss, es);
                     modelsToRender.insert(*sit);
-                    if (auto* frame = GetXLightsFrame()) {
-                        frame->StartOutputTimer(); // start the timer so the render will trigger
+                    if (renderContext) {
+                        renderContext->StartOutputTimer(); // start the timer so the render will trigger
                     }
                 }
             }

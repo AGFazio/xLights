@@ -19,12 +19,13 @@
 #include <pugixml.hpp>
 
 #include "xLightsMain.h"
+#include "ui/media/JukeboxPanel.h"
 #include "ui/sequencer/SeqSettingsDialog.h"
 #include "render/SequenceFile.h"
 #include "effects/RenderableEffect.h"
 #include "models/ModelGroup.h"
 #include "models/SubModel.h"
-#include "ui/sequencer/SequenceViewManager.h"
+#include "render/SequenceViewManager.h"
 #include "ui/layout/LayoutPanel.h"
 #include "UtilFunctions.h"
 #include "ui/wxUtilities.h"
@@ -66,7 +67,16 @@ std::string xLightsFrame::BuildEffectsXml()
     visitor.WriteOpenTag("xrgb");
     serializer.SerializeAllModels(AllModels, visitor);
     serializer.SerializeAllObjects(AllObjects, visitor);
-    serializer.SerializeAllLayoutGroups(LayoutGroups, visitor);
+    std::vector<LayoutGroupData> lgData;
+    lgData.reserve(LayoutGroups.size());
+    for (const auto* lg : LayoutGroups) {
+        lgData.push_back({lg->GetName(), lg->GetBackgroundImage(),
+                          lg->GetBackgroundBrightness(), lg->GetBackgroundAlpha(),
+                          lg->GetBackgroundScaled(),
+                          lg->GetPosX(), lg->GetPosY(),
+                          lg->GetPaneWidth(), lg->GetPaneHeight()});
+    }
+    serializer.SerializeAllLayoutGroups(lgData, visitor);
     SerializePerspectives(visitor);
     SerializeSettings(visitor);
     _sequenceViewManager.Save(visitor);
@@ -1563,6 +1573,10 @@ void xLightsFrame::SaveSequence()
         CurrentSeqXmlFile->SetExt("xsq");
     } else if (wxString(CurrentSeqXmlFile->GetExt()).Lower() == "xbkp") {
         CurrentSeqXmlFile->SetExt("xsq");
+    }
+    // Sync jukebox UI state to sequence data before saving
+    if (GetJukeboxPanel()) {
+        GetJukeboxPanel()->SyncToData(CurrentSeqXmlFile->GetJukeboxButtons());
     }
     SetStatusText(_("Saving ") + CurrentSeqXmlFile->GetFullPath() + _(" ... Saving xsq."));
     spdlog::info("Saving XSQ file.");

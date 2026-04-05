@@ -39,7 +39,6 @@ class IModelPreview;
 class ModelScreenLocation;
 class ModelManager;
 class SubModel;
-class xLightsFrame;
 class OutputManager;
 class ControllerCaps;
 class NodeBaseClass;
@@ -70,10 +69,8 @@ enum {
 
 class Model : public BaseObject
 {
-    friend class LayoutPanel;
     friend class ModelManager;
     friend class SubModel;
-    friend class ModelPropertyAdapter;
 
 public:
 
@@ -157,8 +154,8 @@ public:
     static void WriteFaceInfo(pugi::xml_node fiNode, const FaceStateData& faceInfo);
     std::string SerialiseFace() const;
     std::string SerialiseState() const;
-    void AddModelGroups(pugi::xml_node n, int w, int h, const std::string& name, bool& merge, bool& ask);
-    void ImportExtraModels(pugi::xml_node n, xLightsFrame* xlights, IModelPreview* modelPreview, const std::string& layoutGroup);
+    void AddModelGroups(pugi::xml_node n, const std::string& name, bool& merge, bool& ask);
+    void ImportExtraModels(pugi::xml_node n, ModelManager& modelManager, const std::string& layoutGroup);
 
     void UpdateFaceInfoNodes();
     void UpdateStateInfoNodes();
@@ -210,7 +207,7 @@ public:
     }
     
     void AddSubmodel(SubModel* sm);
-    [[nodiscard]] Model* CreateDefaultModelFromSavedModelNode(Model* model, IModelPreview* modelPreview, pugi::xml_node node, xLightsFrame* xlights, bool& cancelled) const;
+    [[nodiscard]] Model* CreateDefaultModelFromSavedModelNode(Model* model, pugi::xml_node node, ModelManager& modelManager, bool& cancelled) const;
 
     [[nodiscard]] std::string SerialiseSubmodel() const;
     [[nodiscard]] virtual std::string CreateBufferAsSubmodel() const;
@@ -384,6 +381,7 @@ public:
     void SetSuperStringColours(int count);
     void SetSuperStringColour(int index, xlColor c);
     void AddSuperStringColour(xlColor c);
+    void Reinitialize() { InitModel(); }
     void SetShadowModelFor(const std::string& shadowFor);
     [[nodiscard]] bool IsShadowModel() const;
     [[nodiscard]] std::string GetShadowModelFor() const;
@@ -397,6 +395,9 @@ public:
     [[nodiscard]] size_t IndivStartChannelCount() const { return _indivStartChannels.size(); }
     void AddIndivStartChannel(const std::string& ch) { _indivStartChannels.push_back(ch); }
     void PopIndivStartChannel() { _indivStartChannels.pop_back(); }
+    void ClearIndivStartChannels() { _indivStartChannels.clear(); }
+    void ResizeIndivStartChannels(int count) { _indivStartChannels.resize(count); }
+    void SetModelTagColour(const xlColor& c) { _modelTagColour = c; _modelTagColourValid = true; _modelTagColourString = std::string(c); }
 
     bool IsAlias(const std::string& alias, bool oldnameOnly = false) const;
     void AddAlias(const std::string& alias);

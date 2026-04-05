@@ -50,6 +50,12 @@
 #include "ui/sequencer/BatchRenderDialog.h"
 #include "CachedFileDownloader.h"
 #include "ui/shared/dialogs/CheckboxSelectDialog.h"
+#include "ui/shared/dialogs/OptionChooser.h"
+#include "graphics/GLContextManager.h"
+#ifndef __APPLE__
+#include "ui/effectpanels/ShaderPanel.h"
+#include "ui/graphics/opengl/xlGLCanvas.h"
+#endif
 #include "ui/color/ColourReplaceDialog.h"
 #include "ui/color/ColoursPanel.h"
 #include "ui/import-export/ConvertDialog.h"
@@ -620,8 +626,8 @@ xLightsFrame::xLightsFrame(wxWindow* parent, int ab, wxWindowID id, bool renderO
     _renderMode(renderOnlyMode),
     jobPool("RenderPool"),
     _sequenceElements(this),
-    AllModels(&_outputManager, this),
-    AllObjects(this),
+    AllModels(&_outputManager, static_cast<RenderContext*>(this)),
+    AllObjects(static_cast<RenderContext*>(this)),
     color_mgr(this)
 {
     
@@ -650,6 +656,51 @@ xLightsFrame::xLightsFrame(wxWindow* parent, int ab, wxWindowID id, bool renderO
     });
 
     ValueCurve::SetSequenceElements(&_sequenceElements);
+
+    // Initialize the GL context manager for shader rendering.
+    {
+        GLContextManager::InitParams glParams;
+#ifdef _WIN32
+        // Windows: provide main-thread runner and lazy shared-context accessor
+        glParams.mainThreadRunner = [this](std::function<void()> fn) {
+            std::mutex mtx;
+            std::condition_variable cv;
+            bool done = false;
+            CallAfter([&]() {
+                fn();
+                {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    done = true;
+                }
+                cv.notify_all();
+            });
+            std::unique_lock<std::mutex> lk(mtx);
+            cv.wait(lk, [&] { return done; });
+        };
+        glParams.getSharedGLContext = []() -> void* {
+            auto* ctx = xlGLCanvas::GetSharedContext();
+            return ctx ? (void*)ctx->GetGLRC() : nullptr;
+        };
+#elif !defined(__APPLE__)
+        // Linux: provide callbacks that activate/deactivate the shader panel's GL context
+        glParams.activateMainContext = [this]() {
+            auto* p = dynamic_cast<ShaderPanel*>(effectPanelManager.GetPanel(EffectManager::eff_SHADER, nullptr));
+            if (p && p->GetPreview()) p->GetPreview()->SetCurrentGLContext();
+        };
+        glParams.deactivateMainContext = []() {
+            // No explicit deactivation needed on Linux
+        };
+#endif
+        GLContextManager::Instance().Initialize(glParams);
+    }
+
+    _renderEngine = std::make_unique<RenderEngine>(*this, jobPool, _renderCache);
+    _renderEngine->SetOnRenderStatusTimerStart([this]() { RenderStatusTimer.Start(100, false); });
+    _renderEngine->SetOnCallAfterRenderMainThread([this]() { CallAfter(&xLightsFrame::RenderMainThreadEffects); });
+    _renderEngine->SetOnRenderJobComplete([this](const std::string& modelName) {
+        CallAfter(&xLightsFrame::SetStatusText, wxString("Done Rendering \"" + modelName + "\""), 0);
+    });
+    _renderEngine->SetOnAllRenderJobsComplete([this]() { CallAfter(&xLightsFrame::RenderDone); });
 
     _exiting = false;
     SplashScreenShow splash(renderOnlyMode);
@@ -1469,7 +1520,11 @@ xLightsFrame::xLightsFrame(wxWindow* parent, int ab, wxWindowID id, bool renderO
 
     SetPanelSequencerLabel("");
 
-    _outputModelManager.SetFrame(this);
+    _outputModelManager.SetCallbacks(
+        [this]() { CallAfter(&xLightsFrame::DoASAPWork); },
+        [this](uint32_t work, const std::string& type, BaseObject* m, const std::string& selectedModel) {
+            DoWork(work, type, m, selectedModel);
+        });
 
     mRendering = false;
 
@@ -2564,6 +2619,54 @@ std::string xLightsFrame::PromptForText(const std::string& message,
     return defaultValue;
 }
 
+std::vector<std::string> xLightsFrame::ChooseFromList(
+    const std::string& prompt,
+    const std::vector<std::string>& options) const {
+    wxArrayString wxOptions;
+    for (const auto& opt : options) {
+        wxOptions.push_back(opt);
+    }
+    OptionChooser dlg(const_cast<xLightsFrame*>(this));
+    dlg.SetInstructionText(prompt);
+    dlg.SetOptions(wxOptions);
+    if (dlg.ShowModal() == wxID_OK) {
+        wxArrayString selected;
+        dlg.GetSelectedOptions(selected);
+        std::vector<std::string> result;
+        result.reserve(selected.size());
+        for (const auto& s : selected) {
+            result.push_back(s.ToStdString());
+        }
+        return result;
+    }
+    return {};
+}
+
+std::vector<std::string> xLightsFrame::ChooseFromList(
+    const std::string& prompt,
+    const std::vector<std::string>& options,
+    const std::vector<std::string>& preSelected) const {
+    wxArrayString wxOptions;
+    for (const auto& opt : options) {
+        wxOptions.push_back(opt);
+    }
+    wxArrayString wxPreSelected;
+    for (const auto& ps : preSelected) {
+        wxPreSelected.push_back(ps);
+    }
+    CheckboxSelectDialog dlg(const_cast<xLightsFrame*>(this), prompt, wxOptions, wxPreSelected);
+    if (dlg.ShowModal() == wxID_OK) {
+        wxArrayString selected = dlg.GetSelectedItems();
+        std::vector<std::string> result;
+        result.reserve(selected.size());
+        for (const auto& s : selected) {
+            result.push_back(s.ToStdString());
+        }
+        return result;
+    }
+    return {};
+}
+
 UICallbacks::ProgressToken xLightsFrame::BeginProgress(const std::string& message,
                                                        int maximum) {
     auto* dlg = new wxProgressDialog(message, "", maximum, this,
@@ -3504,24 +3607,6 @@ void xLightsFrame::OnAuiToolBarItemPlayButtonClick(wxCommandEvent& event)
         wxCommandEvent playEvent(EVT_PLAY_SEQUENCE);
         wxPostEvent(this, playEvent);
     }
-}
-
-Effect* xLightsFrame::GetPersistentEffectOnModelStartingAtTime(const std::string& model, uint32_t startms) const
-{
-    Element* e = _sequenceElements.GetElement(model);
-
-    if (e == nullptr)
-        return nullptr;
-
-    for (size_t i = 0; i < e->GetEffectLayerCount(); ++i) {
-        Effect* ef = e->GetEffectLayer(i)->GetEffectStartingAtTime(startms);
-        if (ef != nullptr) {
-            if (ef->IsPersistent()) {
-                return ef;
-            }
-        }
-    }
-    return nullptr;
 }
 
 void xLightsFrame::EnableToolbarButton(wxAuiToolBar* toolbar, int id, bool enable)
@@ -4470,6 +4555,10 @@ bool xLightsFrame::SaveWorking()
     std::string origPath = CurrentSeqXmlFile->GetFullPath();
     CurrentSeqXmlFile->SetFullPath(tmp.ToStdString());
 
+    // Sync jukebox UI state to sequence data before saving
+    if (GetJukeboxPanel()) {
+        GetJukeboxPanel()->SyncToData(CurrentSeqXmlFile->GetJukeboxButtons());
+    }
     bool b = CurrentSeqXmlFile->Save(_sequenceElements);
     if (!b) {
         wxMessageDialog msgDlg(this, "Error Saving Sequence to " + tmp,
@@ -6214,7 +6303,12 @@ std::string xLightsFrame::CheckSequence(bool displayInEditor, bool writeToFile)
         allfiles.splice(allfiles.end(), it.second->GetFileReferences());
 
         for (const auto& fit : facefiles) {
-            auto ff = wxSplit(fit, '|');
+            auto ff = wxSplit(fit, '|', wxUniChar(0));
+            if (ff.size() < 2) {
+                wxString msg = wxString::Format("    ERR: Model '%s' has a malformed face entry '%s'.", it.second->GetFullName(), fit);
+                LogAndTrack(report, "models", CheckSequenceReport::ReportIssue::CRITICAL, msg.ToStdString(), "faces", errcount, warncount);
+                continue;
+            }
             if (!FileExists(ff[1])) {
                 wxString msg = wxString::Format("    ERR: Model '%s' face '%s' image missing %s.", it.second->GetFullName(), ff[0], ff[1]);
                 LogAndTrack(report, "models", CheckSequenceReport::ReportIssue::CRITICAL, msg.ToStdString(), "faces", errcount, warncount);
@@ -10032,7 +10126,7 @@ void xLightsFrame::SetDefaultSeqView(const wxString& view)
     UpdateControllerSave();
 }
 
-wxArrayString xLightsFrame::GetSequenceViews()
+std::vector<std::string> xLightsFrame::GetSequenceViews()
 {
     return _sequenceViewManager.GetViewList();
 }

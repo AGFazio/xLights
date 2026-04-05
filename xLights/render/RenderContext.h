@@ -10,14 +10,15 @@
  * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
  **************************************************************/
 
+#include <cstdint>
 #include <list>
 #include <string>
 
 class AudioManager;
+class Effect;
 class EffectManager;
 class Model;
 class OutputModelManager;
-class PixelBufferClass;
 class SequenceElements;
 class TimingElement;
 class UICallbacks;
@@ -51,9 +52,6 @@ public:
     // ---- model access ----
     virtual Model* GetModel(const std::string& name) const = 0;
 
-    // ---- pixel buffer ----
-    virtual bool InitPixelBuffer(const std::string& modelName, PixelBufferClass& buffer, int layerCount) = 0;
-
     // ---- managers ----
     virtual EffectManager& GetEffectManager() = 0;
     virtual OutputModelManager* GetOutputModelManager() = 0;
@@ -68,9 +66,14 @@ public:
     virtual TimingElement* AddTimingElement(const std::string& name,
                                             const std::string& subType = "") = 0;
 
+    // ---- status / timer (empty defaults for headless) ----
+    virtual void SetLoadingStatusText(const std::string& /*text*/) {}
+    virtual void StartOutputTimer() {}
+
     // ---- misc ----
     virtual void SuspendAutoSave(bool suspend) = 0;
     virtual bool IsCheckSequenceOptionDisabled(const std::string& option) const { return false; }
+    virtual bool IsLowDefinitionRender() const { return false; }
 
     // ---- UI callbacks (nullptr when running headless) ----
     virtual UICallbacks* GetUICallbacks() { return nullptr; }

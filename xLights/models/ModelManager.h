@@ -21,8 +21,8 @@
 
 class Model;
 class OutputManager;
+class RenderContext;
 class UICallbacks;
-class xLightsFrame;
 class LayoutGroup;
 
 #ifdef GetObject
@@ -32,7 +32,7 @@ class LayoutGroup;
 class ModelManager : public ObjectManager
 {
     public:
-        ModelManager(OutputManager* outputManager, xLightsFrame* xl);
+        ModelManager(OutputManager* outputManager, RenderContext* rc = nullptr);
         ModelManager(const ModelManager& mm) = delete;
         ModelManager& operator=(const ModelManager& mm) = delete;
         ModelManager() = delete;
@@ -64,7 +64,7 @@ class ModelManager : public ObjectManager
         std::string GetLastModelOnPort(const std::string& controllerName, int port, const std::string& excludeModel, const std::string& protocol) const;
         std::string GetLastModelOnPort(const std::string& controllerName, int port, const std::string& excludeModel, const std::string& protocol, int smartReceiver) const;
         void ReplaceIPInStartChannels(const std::string& oldIP, const std::string& newIP);
-        void AddModelGroups(pugi::xml_node n, int w, int h, const std::string& name, bool& merge, bool& ask);
+        void AddModelGroups(pugi::xml_node n, const std::string& name, bool& merge, bool& ask);
         void LoadModels(pugi::xml_node modelNode, int previewW, int previewH);
         bool LoadGroups(pugi::xml_node groupNode, int previewW, int previewH);
         bool ModelHasNoDependencyOnNoController(Model* m, std::list<std::string>& visited) const;
@@ -73,6 +73,7 @@ class ModelManager : public ObjectManager
 
         void SetLayoutGroups(std::vector<LayoutGroup*>* groups) { layoutGroups = groups; }
         const std::vector<LayoutGroup*>* GetLayoutGroups() const { return layoutGroups; }
+        std::vector<std::string> GetLayoutGroupNames() const;
 
         void clear();
 
@@ -83,7 +84,6 @@ class ModelManager : public ObjectManager
         //Make sure the Model is deleted when done with
         Model *CreateModel(pugi::xml_node node, int previewW = 0, int previewH = 0) const;
         Model *CreateDefaultModel(const std::string &type, const std::string &startChannel = "1") const;
-        xLightsFrame* GetXLightsFrame() const { return xlights; }
         UICallbacks* GetUICallbacks() const override;
         OutputModelManager* GetOutputModelManager() const override;
         bool IsLowDefinitionRender() const;
@@ -101,13 +101,19 @@ class ModelManager : public ObjectManager
         static bool MergeBaseXml(const std::string& baseShowDir, pugi::xml_node localModelsNode, pugi::xml_node localGroupsNode);
         std::string GetLastGeneratedModelName() const { return lastGeneratedModelName; }
 
+        // Ruler state for model import (tracks whether dimensions were applied via ruler)
+        void ClearUsedRuler() { _usedRuler = false; }
+        void SetUsedRuler() { _usedRuler = true; }
+        bool UsedRuler() const { return _usedRuler; }
+
         std::map<std::string, Model *> GetModels() const { return models; }
 
     private:
 
     std::vector<LayoutGroup*>* layoutGroups = nullptr;
     OutputManager* _outputManager = nullptr;
-    xLightsFrame* xlights = nullptr;
+    RenderContext* _renderContext = nullptr;
+    bool _usedRuler = false;
     int previewWidth = 0;
     int previewHeight = 0;
     std::map<std::string, Model *> models;

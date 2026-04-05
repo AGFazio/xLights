@@ -57,7 +57,8 @@
 #include "ui/sequencer/SelectPanel.h"
 #include "ui/diagnostics/SearchPanel.h"
 #include "ui/layout/LayoutGroup.h"
-#include "ui/layout/ViewpointMgr.h"
+#include "ui/media/JukeboxPanel.h"
+#include "render/ViewpointMgr.h"
 #include "ui/layout/LayoutPanel.h"
 #include "../utils/TraceLog.h"
 #include "../ui/effectpanels/EffectPanelUtils.h"
@@ -85,7 +86,8 @@ void xLightsFrame::CreateSequencer()
 
     spdlog::debug("                Set timeline.");
     mainSequencer->PanelWaveForm->SetTimeline(mainSequencer->PanelTimeLine);
-    _sequenceElements.SetTimeLine(mainSequencer->PanelTimeLine);
+    mainSequencer->PanelTimeLine->SetSequenceElements(&_sequenceElements);
+    mainSequencer->PanelTimeLine->SyncTagsFrom(_sequenceElements);
 
     spdlog::debug("                Set sequence elements.");
     mainSequencer->PanelRowHeadings->SetSequenceElements(&_sequenceElements);
@@ -310,22 +312,10 @@ void xLightsFrame::InitSequencer()
 
 Model *xLightsFrame::GetModel(const std::string& name) const
 {
+    if (_presetModel != nullptr && name == _presetModel->GetName()) {
+        return _presetModel;
+    }
     return AllModels[name];
-}
-
-bool xLightsFrame::InitPixelBuffer(const std::string &modelName, PixelBufferClass &buffer, int layerCount) {
-
-    if (modelName == PRESET_MODEL_NAME && _presetModel != nullptr) {
-        buffer.InitBuffer(*_presetModel, layerCount, 50);
-    }
-    else {
-        Model* model = GetModel(modelName);
-        if (model == nullptr) {
-            return false;
-        }
-        buffer.InitBuffer(*model, layerCount, _seqData.FrameTime());
-    }
-    return true;
 }
 
 void xLightsFrame::CheckForAndCreateDefaultPerpective()
@@ -891,6 +881,11 @@ void xLightsFrame::LoadSequencer(SequenceFile& xml_file, pugi::xml_document& doc
 
     AddTraceMessage("loading");
     _sequenceElements.LoadSequencerFile(xml_file, doc, GetShowDirectory());
+
+    // Sync jukebox UI from sequence data
+    if (GetJukeboxPanel()) {
+        GetJukeboxPanel()->SyncFromData(xml_file.GetJukeboxButtons());
+    }
 
     spdlog::debug("Upgrading sequence");
     xml_file.AdjustEffectSettingsForVersion(_sequenceElements, this);
@@ -3497,13 +3492,9 @@ int UpperTS(float t, int intervalMS)
     return res;
 }
 
-void PTProgress(wxProgressDialog* pd, int p)
+void PTProgress(int p)
 {
-    // Update progress dialog
-    if (pd != nullptr)
-    {
-        pd->Update(p);
-    }
+    // Update progress callback
 }
 
 std::map<int, std::vector<float>> xLightsFrame::LoadPolyphonicTranscription(AudioManager* audio, int intervalMS)
@@ -3513,9 +3504,8 @@ std::map<int, std::vector<float>> xLightsFrame::LoadPolyphonicTranscription(Audi
     if (audio != nullptr) {
         try {
             if (!audio->IsPolyphonicTranscriptionDone()) {
-                wxProgressDialog pd("Processing Audio", "");
                 spdlog::info("Processing Polyphonic Transcription to produce notes");
-                audio->DoPolyphonicTranscription(&pd, &PTProgress);
+                audio->DoPolyphonicTranscription(&PTProgress);
                 spdlog::info("Processing Polyphonic Transcription - DONE");
             }
         } catch (...) {
@@ -3905,6 +3895,16 @@ void xLightsFrame::ImportTimingElement()
             } else {
                 CurrentSeqXmlFile->ProcessAudacityTimingFiles( filenames, this);
             }
+            _sequenceElements.DeactivateAllTimingElements();
+            int timingCount = _sequenceElements.GetNumberOfTimingElements();
+            if (timingCount > 0) {
+                TimingElement* te = _sequenceElements.GetTimingElement(timingCount - 1);
+                if (te != nullptr) {
+                    te->SetActive(true);
+                }
+            }
+            wxCommandEvent eventRowHeaderChanged(EVT_ROW_HEADINGS_CHANGED);
+            wxPostEvent(this, eventRowHeaderChanged);
         }
     }
 

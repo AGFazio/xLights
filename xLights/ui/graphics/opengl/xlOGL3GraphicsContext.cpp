@@ -13,7 +13,7 @@
 
 #include <log.h>
 
-#include "DrawGLUtils.h"
+#include "effects/OpenGLShaders.h"
 #include "../../../graphics/xlMesh.h"
 
 #include <glm/mat4x4.hpp>
@@ -28,6 +28,12 @@
 
 
 #ifndef __WXMAC__
+#ifdef _MSC_VER
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <GL/gl.h>
 #ifndef _MSC_VER
 #include <GL/glx.h>
@@ -96,7 +102,7 @@ __GLXextFuncPtr wglGetProcAddress(const char* a) {
 #endif
 
 
-bool DrawGLUtils::LoadGLFunctions() {
+static bool LoadGLFunctions() {
     glUseProgram = (PFNGLUSEPROGRAMPROC)wglGetProcAddress("glUseProgram");
     glCreateShader = (PFNGLCREATESHADERPROC)wglGetProcAddress("glCreateShader");
     glShaderSource = (PFNGLSHADERSOURCEPROC)wglGetProcAddress("glShaderSource");
@@ -165,7 +171,7 @@ bool DrawGLUtils::LoadGLFunctions() {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-bool DrawGLUtils::LoadGLFunctions() {
+static bool LoadGLFunctions() {
     return true;
 }
 #endif
@@ -213,20 +219,20 @@ public:
 
                 if (ProgramID == 0)
                 {
-                    DrawGLUtils::DoLogGLError(__FILE__, __LINE__, "Failed to create program from vertex and fragment shader");
+                    OpenGLShaders::DoLogGLError(__FILE__, __LINE__, "Failed to create program from vertex and fragment shader");
                 }
 
                 glDeleteShader(FragmentShaderID);
             }
             else
             {
-                DrawGLUtils::DoLogGLError(__FILE__, __LINE__, "Failed to create fragment shader");
+                OpenGLShaders::DoLogGLError(__FILE__, __LINE__, "Failed to create fragment shader");
             }
             glDeleteShader(VertexShaderID);
         }
         else
         {
-            DrawGLUtils::DoLogGLError(__FILE__, __LINE__, "Failed to create vertex shader");
+            OpenGLShaders::DoLogGLError(__FILE__, __LINE__, "Failed to create vertex shader");
         }
 
         if (valid) {
@@ -292,7 +298,7 @@ public:
         }
         else
         {
-            DrawGLUtils::DoLogGLError(__FILE__, __LINE__, "glCreateProgram failed.");
+            OpenGLShaders::DoLogGLError(__FILE__, __LINE__, "glCreateProgram failed.");
         }
         return ProgramID;
     }
@@ -346,7 +352,7 @@ bool xlOGL3GraphicsContext::InitializeSharedContext() {
 
     bool valid = true;
 
-    LOG_GL_ERRORV(DrawGLUtils::LoadGLFunctions());
+    LOG_GL_ERRORV(LoadGLFunctions());
     
     const GLubyte* str = glGetString(GL_VERSION);
     bool cp = str[0] > '3' || (str[0] == '3' && str[2] >= '3');
@@ -1555,7 +1561,7 @@ xlGraphicsContext* xlOGL3GraphicsContext::drawTexture(xlVertexTextureAccumulator
                               ((float)color.blue) / 255.0f,
                               ((float)color.alpha) / 255.0f));
 
-    if (enableCapabilities > 0) {
+    if (enableCapabilities >  0) {
         LOG_GL_ERRORV(glEnable(enableCapabilities));
     }
     LOG_GL_ERRORV(glDrawArrays(GL_TRIANGLES, start, c));
@@ -1615,6 +1621,7 @@ public:
         if (nbuffer) {
             LOG_GL_ERRORV(glDeleteBuffers(1, &nbuffer));
         }
+
         if (wfIndexes) {
             LOG_GL_ERRORV(glDeleteBuffers(1, &wfIndexes));
         }
@@ -2172,7 +2179,7 @@ xlGraphicsContext* xlOGL3GraphicsContext::SetCamera(const glm::mat4 &m) {
 }
 xlGraphicsContext* xlOGL3GraphicsContext::SetModelMatrix(const glm::mat4 &m) {
     frameData.MVP = frameData.MVP * m;
-    frameData.modelMatrix = m;
+    frameData.modelMatrix = frameData.modelMatrix * m;
     frameDataChanged = true;
     return this;
 }

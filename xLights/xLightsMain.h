@@ -80,10 +80,10 @@
 #include "models/ViewObjectManager.h"
 #include "ui/shared/utils/xLightsTimer.h"
 #include "JobPool.h"
-#include "ui/sequencer/SequenceViewManager.h"
+#include "render/SequenceViewManager.h"
 #include "ui/color/ColorManager.h"
 #include "ui/effects/EffectPresetManager.h"
-#include "ui/layout/ViewpointMgr.h"
+#include "render/ViewpointMgr.h"
 #include "PhonemeDictionary.h"
 #include "render/SequenceFile.h"
 #include "ui/sequencer/EffectsGrid.h"
@@ -91,7 +91,7 @@
 #include "outputs/ZCPP.h"
 #include "models/OutputModelManager.h"
 #include "render/RenderContext.h"
-#include "render/IRenderJobCallbacks.h"
+#include "render/RenderEngine.h"
 #include "render/IRenderProgressSink.h"
 #include "render/UICallbacks.h"
 #include "models/Model.h"
@@ -306,7 +306,7 @@ private:
     int id;
 };
 
-class xLightsFrame: public xlFrame, public RenderContext, public UICallbacks, public IRenderJobCallbacks
+class xLightsFrame: public xlFrame, public RenderContext, public UICallbacks
 {
 public:
 
@@ -1280,7 +1280,7 @@ public:
     const wxString& GetLinkedControllerUpload() const { return _linkedControllerUpload; }
     void SetLinkedControllerUpload(const wxString& e);
     
-    const wxString& GetRenameModelAliasPromptBehavior() const { return _aliasRenameBehavior; }
+    std::string GetRenameModelAliasPromptBehavior() const override { return _aliasRenameBehavior.ToStdString(); }
     void SetRenameModelAliasPromptBehavior(const wxString& e);
 
     int SaveFSEQVersion() const { return _fseqVersion; }
@@ -1393,7 +1393,7 @@ public:
 
     const std::string& GetDefaultSeqView() const { return _defaultSeqView; }
     void SetDefaultSeqView(const wxString& view);
-    wxArrayString GetSequenceViews();
+    std::vector<std::string> GetSequenceViews();
 
     const wxString& GetVideoExportCodec() const { return _videoExportCodec; }
     void SetVideoExportCodec(const wxString& codec);
@@ -1484,9 +1484,8 @@ public:
 
     void DoPostStartupCommands();
 
-    std::list<RenderProgressInfo *>renderProgressInfo;
-    std::queue<RenderEvent*> mainThreadRenderEvents;
-    std::mutex renderEventLock;
+    // Render state is owned by _renderEngine (created in constructor).
+    // These accessors provide backward-compatible access for UI code.
 
     std::string _permanentShowFolder;
     std::string mediaFilename;
@@ -1522,6 +1521,10 @@ public:
 
     void SuspendAutoSave(bool dosuspend) override { _suspendAutoSave = dosuspend; }
 
+    // ---- RenderContext: status/timer ----
+    void SetLoadingStatusText(const std::string& text) override { SetStatusText(wxString(text)); }
+    void StartOutputTimer() override;
+
     // ---- RenderContext: UICallbacks access ----
     UICallbacks* GetUICallbacks() override { return this; }
 
@@ -1542,6 +1545,13 @@ public:
     std::string PromptForText(const std::string& message,
                               const std::string& caption,
                               const std::string& defaultValue = "") const override;
+    std::vector<std::string> ChooseFromList(
+        const std::string& prompt,
+        const std::vector<std::string>& options) const override;
+    std::vector<std::string> ChooseFromList(
+        const std::string& prompt,
+        const std::vector<std::string>& options,
+        const std::vector<std::string>& preSelected) const override;
     ProgressToken BeginProgress(const std::string& message,
                                 int maximum = 100) override;
     void UpdateProgress(ProgressToken token, int value,
@@ -1600,7 +1610,6 @@ public:
     std::string BuildEffectsXml();
     bool IsNewModel(Model* m) const;
     int GetCurrentPlayTime();
-    bool InitPixelBuffer(const std::string &modelName, PixelBufferClass &buffer, int layerCount) override;
     Model *GetModel(const std::string& name) const override;
     void RenderGridToSeqData(std::function<void(bool)>&& callback);
     bool AbortRender(int maxTimeMs = 60000) override;
@@ -1608,26 +1617,9 @@ public:
     std::string GetSelectedLayoutPanelPreview() const;
     void UpdateRenderStatus();
     void LogRenderStatus();
-    bool RenderEffectFromMap(bool suppress, Effect *effect, int layer, int period, SettingsMap& SettingsMap,
-                             PixelBufferClass &buffer, bool &ResetEffectState,
-                             bool bgThread = false, RenderEvent *event = nullptr) override;
-
-    // IRenderJobCallbacks implementation
-    void OnRenderJobComplete(const std::string& modelName) override;
-    void OnAllRenderJobsComplete() override;
     void RenderMainThreadEffects() override;
-    void RenderEffectOnMainThread(RenderEvent *evt);
     void RenderEffectForModel(const std::string &model, int startms, int endms, bool clear = false) override;
-    void RenderDirtyModels();
     void RenderTimeSlice(int startms, int endms, bool clear);
-    void Render(SequenceElements& seqElements,
-                SequenceData& seqData,
-                const std::list<Model*> models,
-                const std::list<Model *> &restrictToModels,
-                int startFrame, int endFrame,
-                std::unique_ptr<IRenderProgressSink> sink, bool clear,
-                std::function<void(bool)>&& callback);
-    void BuildRenderTree();
 
     void RenderRange(RenderCommandEvent &cmd);
     void RenderDone();
@@ -1745,28 +1737,14 @@ private:
     int mEffectAssistMode = 0;
     int tempEffectAssistMode = 0;
 	bool mRendering;
-    int abortedRenderJobs = 0;
     bool mSaveFseqOnSave;
     int _modelHandleSize = 1;
     int _crosshairSize = 1;
 
-    class RenderTree {
-    public:
-        RenderTree() : renderTreeChangeCount(0) {}
-        ~RenderTree() { Clear(); }
-        void Clear();
-        void Add(Model *el);
-        void Print();
-        // Returns the ordered list of models from the render tree.
-        // Defined in Render.cpp where RenderTreeData is fully declared.
-        std::list<Model*> GetModels() const;
-
-        unsigned int renderTreeChangeCount;
-        std::list<RenderTreeData*> data;
-    } renderTree;
     int mAutoSaveInterval;
     int BackupPurgeDays;
     JobPool jobPool;
+    std::unique_ptr<RenderEngine> _renderEngine;
 
     Model *playModel;
     int playType;
@@ -1963,7 +1941,6 @@ private:
     void LoadDockable();
     void SaveDockable();
 
-    Effect* GetPersistentEffectOnModelStartingAtTime(const std::string& model, uint32_t startms) const;
     void EnableToolbarButton(wxAuiToolBar* toolbar, int id, bool enable);
     void CheckForAndCreateDefaultPerpective();
     void ResizeAndMakeEffectsScroll();
@@ -2042,7 +2019,6 @@ public:
 
     int GetPlayStatus() const { return playType; }
     void SetPlayStatus(int status);
-    void StartOutputTimer();
     void StopOutputTimer();
     
     MainSequencer* GetMainSequencer() const { return mainSequencer; }

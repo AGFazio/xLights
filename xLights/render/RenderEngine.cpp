@@ -20,10 +20,15 @@
 #include <map>
 #include <memory>
 
-#include "xLightsMain.h"
+#include "RenderEngine.h"
+#include "RenderContext.h"
+#include "Effect.h"
+#include "EffectLayer.h"
+#include "Element.h"
+#include "SequenceElements.h"
 #include "SequenceFile.h"
 #include "effects/RenderableEffect.h"
-#include "IRenderJobCallbacks.h"
+#include "effects/EffectManager.h"
 #include "IRenderJobStatus.h"
 #include "IRenderProgressSink.h"
 #include "RenderProgressInfo.h"
@@ -34,6 +39,9 @@
 #include "Parallel.h"
 #include "utils/ExternalHooks.h"
 #include "GPURenderUtils.h"
+#include "RenderCache.h"
+#include "UtilClasses.h"
+#include "JobPool.h"
 
 #include <log.h>
 // END_OF_RENDER_FRAME is defined in RenderProgressInfo.h
@@ -233,8 +241,8 @@ public:
 
 class RenderJob: public Job, public NextRenderer, public IRenderJobStatus {
 public:
-    RenderJob(ModelElement *row, SequenceData &data, RenderContext *ctx, IRenderJobCallbacks *callbacks)
-        : Job(), NextRenderer(), rowToRender(row), _ctx(ctx), _callbacks(callbacks), seqData(&data),
+    RenderJob(ModelElement *row, SequenceData &data, RenderContext *ctx, RenderEngine *engine)
+        : Job(), NextRenderer(), rowToRender(row), _ctx(ctx), _engine(engine), seqData(&data),
             supportsModelBlending(false), statusMap(nullptr), m_logger(spdlog::get("render")),
             currentFrame(0), abort(false)
     {
@@ -244,7 +252,9 @@ public:
             mainBuffer = new PixelBufferClass(_ctx);
             numLayers = rowToRender->GetEffectLayerCount();
 
-            if (_ctx->InitPixelBuffer(name, *mainBuffer, numLayers)) {
+            Model* mdl = _ctx->GetModel(name);
+            if (mdl != nullptr) {
+                mainBuffer->InitBuffer(*mdl, numLayers, seqData->FrameTime());
                 const Model *model = mainBuffer->GetModel();
                 if (DisplayAsType::ModelGroup == model->GetDisplayAs()) {
                     //for (int l = 0; l < numLayers; ++l) {
@@ -716,7 +726,7 @@ public:
                     buffer->UnMergeBuffersForLayer(layer);
                 }
 
-                info.validLayers[layer] = _callbacks->RenderEffectFromMap(suppress, ef, layer, frame, info.settingsMaps[layer], *buffer, b, true, &renderEvent);
+                info.validLayers[layer] = _engine->RenderEffectFromMap(suppress, ef, layer, frame, info.settingsMaps[layer], *buffer, b, true, &renderEvent);
                 effectsToUpdate |= info.validLayers[layer];
                 info.effectStates[layer] = b;
 
@@ -900,7 +910,7 @@ public:
                         }
 
                         SetRenderingStatus(frame, &nodeSettingsMaps[node], -1, -1, strand, inode, cleared);
-                        if (_callbacks->RenderEffectFromMap(false, el, 0, frame, nodeSettingsMaps[node], *buffer, nodeEffectStates[node], true, &renderEvent)) {
+                        if (_engine->RenderEffectFromMap(false, el, 0, frame, nodeSettingsMaps[node], *buffer, nodeEffectStates[node], true, &renderEvent)) {
                             SetCalOutputStatus(frame, -1, strand, inode);
                             buffer->HandleLayerBlurZoom(frame, 0);
                             buffer->HandleLayerTransitions(frame, 0);
@@ -939,10 +949,10 @@ public:
             //let the next know we're done
             SetGenericStatus("{}: Notifying next renderer of final frame", 0, true);
             FrameDone(END_OF_RENDER_FRAME);
-            _callbacks->OnRenderJobComplete(rowToRender->GetModelName());
+            _engine->OnRenderJobComplete(rowToRender->GetModelName());
             SetGenericStatus("{}: All done - Completed frame {} ", endFrame, true, false);
         } else {
-            _callbacks->OnAllRenderJobsComplete();
+            _engine->OnAllRenderJobsComplete();
         }
         rowToRender->CleanupAfterRender();
         currentFrame = END_OF_RENDER_FRAME;
@@ -1040,7 +1050,7 @@ private:
     std::atomic_int startFrame;
     std::atomic_int endFrame;
     RenderContext *_ctx;
-    IRenderJobCallbacks *_callbacks;
+    RenderEngine *_engine;
     SequenceData *seqData;
     std::vector<bool> rangeRestriction;
     bool supportsModelBlending;
@@ -1069,24 +1079,34 @@ private:
 
 // RenderRange — moved to RenderUI.cpp (uses RenderCommandEvent wx type)
 
-void xLightsFrame::RenderMainThreadEffects() {
-    std::unique_lock<std::mutex>  lock(renderEventLock);
-    while (!mainThreadRenderEvents.empty()) {
-        RenderEvent *evt = mainThreadRenderEvents.front();
-        mainThreadRenderEvents.pop();
+RenderEngine::RenderEngine(RenderContext& ctx, JobPool& pool, RenderCache& cache)
+    : _ctx(ctx), _jobPool(pool), _renderCache(cache) {}
+
+RenderEngine::~RenderEngine() {
+    for (auto* rpi : _renderProgressInfo) {
+        rpi->CleanupJobs();
+        delete rpi;
+    }
+    _renderProgressInfo.clear();
+}
+
+void RenderEngine::RenderMainThreadEffects() {
+    std::unique_lock<std::mutex> lock(_renderEventLock);
+    while (!_mainThreadRenderEvents.empty()) {
+        RenderEvent *evt = _mainThreadRenderEvents.front();
+        _mainThreadRenderEvents.pop();
         lock.unlock();
         RenderEffectOnMainThread(evt);
         lock.lock();
     }
-
 }
 
-void xLightsFrame::RenderEffectOnMainThread(RenderEvent *ev) {
+void RenderEngine::RenderEffectOnMainThread(RenderEvent *ev) {
     std::unique_lock<std::mutex> lock(ev->mutex);
 
     // validate that the effect still exists as this could be being processed after the effect was deleted
-    // Also check preset elements - used when rendering shader/effect previews via RenderEffectToFrames
-    if (_sequenceElements.IsValidEffect(ev->effect) || _presetSequenceElements.IsValidEffect(ev->effect)) {
+    SequenceElements& seqElements = _ctx.GetSequenceElements();
+    if (seqElements.IsValidEffect(ev->effect)) {
         ev->returnVal = RenderEffectFromMap(ev->suppress, ev->effect,
             ev->layer,
             ev->period,
@@ -1205,14 +1225,14 @@ public:
     Model *model;
 };
 
-void xLightsFrame::RenderTree::Clear() {
+void RenderEngine::RenderTree::Clear() {
     for (auto it : data) {
         delete it;
     }
     data.clear();
 }
 
-void xLightsFrame::RenderTree::Add(Model *el) {
+void RenderEngine::RenderTree::Add(Model *el) {
     RenderTreeData *elData = new RenderTreeData(el);
     for (const auto& it : data) {
         RenderTreeData *elData2 = it;
@@ -1225,7 +1245,7 @@ void xLightsFrame::RenderTree::Add(Model *el) {
     data.push_back(elData);
 }
 
-void xLightsFrame::RenderTree::Print() {
+void RenderEngine::RenderTree::Print() {
     auto logger_render = spdlog::get("render");
     logger_render->debug("========== RENDER TREE");
     for (const auto& it : data) {
@@ -1239,7 +1259,7 @@ void xLightsFrame::RenderTree::Print() {
     logger_render->debug("========== END RENDER TREE");
 }
 
-std::list<Model*> xLightsFrame::RenderTree::GetModels() const {
+std::list<Model*> RenderEngine::RenderTree::GetModels() const {
     std::list<Model*> models;
     for (const auto& it : data) {
         models.push_back(it->model);
@@ -1247,30 +1267,30 @@ std::list<Model*> xLightsFrame::RenderTree::GetModels() const {
     return models;
 }
 
-void xLightsFrame::BuildRenderTree() {
-    unsigned int curChangeCount = _sequenceElements.GetMasterViewChangeCount() + modelsChangeCount;
-    if (renderTree.renderTreeChangeCount != curChangeCount) {
-        renderTree.Clear();
-        const int numEls = _sequenceElements.GetElementCount(MASTER_VIEW);
+void RenderEngine::BuildRenderTree(SequenceElements& elements, unsigned int modelsChangeCount) {
+    unsigned int curChangeCount = elements.GetMasterViewChangeCount() + modelsChangeCount;
+    if (_renderTree.renderTreeChangeCount != curChangeCount) {
+        _renderTree.Clear();
+        const int numEls = elements.GetElementCount(MASTER_VIEW);
         if (numEls == 0) {
             //nothing to do....
             return;
         }
         for (size_t row = 0; row < (size_t)numEls; ++row) {
-            Element *rowEl = _sequenceElements.GetElement(row, MASTER_VIEW);
+            Element *rowEl = elements.GetElement(row, MASTER_VIEW);
             if (rowEl != nullptr && rowEl->GetType() == ElementType::ELEMENT_TYPE_MODEL) {
-                Model *model = GetModel(rowEl->GetModelName());
+                Model *model = _ctx.GetModel(rowEl->GetModelName());
                 if (model != nullptr) {
-                    renderTree.Add(model);
+                    _renderTree.Add(model);
                 }
             }
         }
-        renderTree.Print();
-        renderTree.renderTreeChangeCount = curChangeCount;
+        _renderTree.Print();
+        _renderTree.renderTreeChangeCount = curChangeCount;
     }
 }
 
-void xLightsFrame::Render(SequenceElements& seqElements,
+void RenderEngine::Render(SequenceElements& seqElements,
                           SequenceData& seqData,
                           const std::list<Model*> models,
                           const std::list<Model *> &restrictToModels,
@@ -1278,7 +1298,7 @@ void xLightsFrame::Render(SequenceElements& seqElements,
                           std::unique_ptr<IRenderProgressSink> sink, bool clear,
                           std::function<void(bool)>&& callback)
 {
-    abortedRenderJobs = 0;
+    _abortedRenderJobs = 0;
 
     auto logger_render = spdlog::get("render");
     if (startFrame < 0) {
@@ -1322,7 +1342,7 @@ void xLightsFrame::Render(SequenceElements& seqElements,
                 bool hasEffects = HasEffects(me);
                 bool isRestricted = std::find(restrictToModels.begin(), restrictToModels.end(), *it) != restrictToModels.end();
                 if (hasEffects || (isRestricted && clear)) {
-                    RenderJob *job = new RenderJob(me, seqData, this, this);
+                    RenderJob *job = new RenderJob(me, seqData, &_ctx, this);
 
                     if (job == nullptr) {
                         logger_render->critical("xLightsFrame::Render job is nullptr ... this is going to crash.");
@@ -1384,7 +1404,7 @@ void xLightsFrame::Render(SequenceElements& seqElements,
                 //start all the jobs that don't depend on anything above them
                 //get them rendering while we setup the rest
                 jobs[row]->setPreviousFrameDone(END_OF_RENDER_FRAME);
-                jobPool.PushJob(jobs[row]);
+                _jobPool.PushJob(jobs[row]);
                 ++count;
             }
             if (sink) {
@@ -1393,15 +1413,15 @@ void xLightsFrame::Render(SequenceElements& seqElements,
         }
     }
 
-    logger_render->debug("Job pool start size {}.", (int)jobPool.size());
+    logger_render->debug("Job pool start size {}.", (int)_jobPool.size());
     for (row = 0; row < (size_t)numRows; ++row) {
         if (jobs[row] && aggregators[row]->getNumAggregated() != 0) {
             //now start the rest
-            jobPool.PushJob(jobs[row]);
+            _jobPool.PushJob(jobs[row]);
             ++count;
         }
     }
-    logger_render->debug("Job pool new size {}.", (int)jobPool.size());
+    logger_render->debug("Job pool new size {}.", (int)_jobPool.size());
 
     if (count) {
         if (sink) {
@@ -1425,12 +1445,12 @@ void xLightsFrame::Render(SequenceElements& seqElements,
         pi->restriction = restrictToModels;
         pi->aggregators = aggregators;
 
-        renderProgressInfo.push_back(pi);
-        RenderStatusTimer.Start(100, false);
+        _renderProgressInfo.push_back(pi);
+        if (_onRenderStatusTimerStart) _onRenderStatusTimerStart();
     } else {
         delete[] jobs;
         delete[] aggregators;
-        callback(abortedRenderJobs > 0);
+        callback(_abortedRenderJobs > 0);
         // sink auto-deleted by unique_ptr
     }
 }
@@ -1471,12 +1491,13 @@ static void addModelsFrom(std::list<Model*> &models, const std::list<Model *> &t
     }
 }
 
-void xLightsFrame::RenderDirtyModels() {
+void RenderEngine::RenderDirtyModels(SequenceElements& _sequenceElements, SequenceData& _seqData,
+                                     bool suspendRender, unsigned int modelsChangeCount) {
 
-    if (_suspendRender) return; // dont render if suspended
+    if (suspendRender) return; // dont render if suspended
 
-    BuildRenderTree();
-    if (renderTree.data.empty()) {
+    BuildRenderTree(_sequenceElements, modelsChangeCount);
+    if (_renderTree.data.empty()) {
         //nothing to do....
         return;
     }
@@ -1496,7 +1517,7 @@ void xLightsFrame::RenderDirtyModels() {
             if (st != -1) {
                 startms = std::min(startms, st);
                 endms = std::max(endms, ed);
-                for (auto it = renderTree.data.begin(); it != renderTree.data.end(); ++it) {
+                for (auto it = _renderTree.data.begin(); it != _renderTree.data.end(); ++it) {
                     if ((*it)->model->GetName() == el->GetModelName()) {
                         restricts.push_back((*it)->model);
                         addModelsUpTo(models, (*it)->renderOrder, (*it)->model);
@@ -1509,7 +1530,7 @@ void xLightsFrame::RenderDirtyModels() {
         return;
     }
     for (auto x = models.begin(); x != models.end(); ++x) {
-        for (auto it = renderTree.data.begin(); it != renderTree.data.end(); ++it) {
+        for (auto it = _renderTree.data.begin(); it != _renderTree.data.end(); ++it) {
             if ((*it)->model == *x) {
                 addModelsFrom(models, (*it)->renderOrder, (*it)->model);
             }
@@ -1535,111 +1556,73 @@ void xLightsFrame::RenderDirtyModels() {
     Render(_sequenceElements, _seqData, models, restricts, startframe, endframe, nullptr, true, [] (bool) {});
 }
 
-bool xLightsFrame::AbortRender(int maxTimeMS)
-{
-    return AbortRender(maxTimeMS, nullptr);
-}
-
-bool xLightsFrame::AbortRender(int maxTimeMS, int* numThreadsAborted)
-{
-    
-    static bool inAbort = false;
-    if (renderProgressInfo.empty()) {
-        //nothing to abort, return quickly
-        return true;
-    }
-    if (inAbort) {
-        return false;
-    }
-    inAbort = true;
-    spdlog::info("Aborting rendering ...");
-    int abortCount = 0;
-    for (auto rpi : renderProgressInfo) {
-        //abort whatever is rendering
+void RenderEngine::SignalAbort() {
+    for (auto rpi : _renderProgressInfo) {
         for (size_t row = 0; row < (size_t)rpi->numRows; ++row) {
             if (rpi->jobs[row]) {
                 rpi->jobs[row]->AbortRender();
-                ++abortCount;
-                ++abortedRenderJobs;
+                ++_abortedRenderJobs;
             }
         }
     }
-    int maxLoops = maxTimeMS;
-    maxLoops /= 10;   //doing a 10ms sleep
-    //must wait for the rendering to complete
-    spdlog::info("Aborting {} renderers", abortCount);
-    int loops = 0;
-    while (!renderProgressInfo.empty() && loops < maxLoops) {
-        loops++;
-        RenderMainThreadEffects(); // make sure main thread effects are rendered
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        UpdateRenderStatus(); // a side effect is to clean up renderProgressInfo
-        if (!renderProgressInfo.empty() && loops > 25) {
-            wxYield(); // not sure this is advisable ... but it makes the app look responsive
-            // only do this if it's taking more than 250ms to abort.  Less than 250ms and ui will
-            // still be "responsive enough" and MOST of the time it should abort in under 250ms.
-            // The yeild COULD end up sending more mouse events and such which could trigger
-            // more aborts or have events prcessed out of order.   Thus, avoid the yield for most
-            // cases.
-        }
-        if (loops % 200 == 0) {
-            spdlog::info("    Waiting for renderers to abort. {} left.", (int)renderProgressInfo.size());
-        }
-    }
-    spdlog::info("    Aborting renderers ... Done");
-    inAbort = false;
-    if( numThreadsAborted != nullptr ) {
-        *numThreadsAborted = abortCount;
-    }
-    return renderProgressInfo.empty();
 }
 
 // RenderGridToSeqData — moved to RenderUI.cpp (creates WxRenderProgressSink)
 
-void xLightsFrame::RenderEffectForModel(const std::string &model, int startms, int endms, bool clear) {
+static Effect* GetPersistentEffectOnModelStartingAtTime(SequenceElements& seqElements, const std::string& model, uint32_t startms) {
+    Element* e = seqElements.GetElement(model);
+    if (e == nullptr)
+        return nullptr;
+    for (size_t i = 0; i < e->GetEffectLayerCount(); ++i) {
+        Effect* ef = e->GetEffectLayer(i)->GetEffectStartingAtTime(startms);
+        if (ef != nullptr && ef->IsPersistent()) {
+            return ef;
+        }
+    }
+    return nullptr;
+}
 
-    
 
-    if (_suspendRender) return;
+void RenderEngine::RenderEffectForModel(const std::string &model, int startms, int endms,
+                                        SequenceElements& _sequenceElements, SequenceData& _seqData,
+                                        bool suspendRender, unsigned int modelsChangeCount, bool clear) {
 
-    BuildRenderTree();
+    if (suspendRender) return;
+
+    BuildRenderTree(_sequenceElements, modelsChangeCount);
 
     spdlog::debug("Render tree built for model {} {}ms-{}ms. {} entries.",
         (const char *)model.c_str(),
         startms,
         endms,
-        renderTree.data.size());
+        _renderTree.data.size());
 
-    int startframe = startms / _seqData.FrameTime();// -1; by expanding the range we end up rendering more than necessary for no obvious reason
+    int startframe = startms / _seqData.FrameTime();
 
     // If there is an effect at the start time that has the persistent flag set then include the prior frame
-    // This expands the render time but only when it absolutely must
-    if (GetPersistentEffectOnModelStartingAtTime(model, startms) != nullptr)
-    {
+    Effect* persistentEffectBefore = GetPersistentEffectOnModelStartingAtTime(_sequenceElements, model, startms);
+    if (persistentEffectBefore != nullptr) {
         startframe -= 1;
     }
 
     if (startframe < 0) {
         startframe = 0;
     }
-    int endframe = endms / _seqData.FrameTime();// +1; by expanding the range we end up rendering more than necessary for no obvious reason
+    int endframe = endms / _seqData.FrameTime();
 
-    // If there is an effect at the end time that has the persistent flag set then include the nextframe
-    // This expands the render time but only when it absolutely must
-    Effect* persistentEffectAfter = GetPersistentEffectOnModelStartingAtTime(model, endms);
-    if (persistentEffectAfter != nullptr)
-    {
+    // If there is an effect at the end time that has the persistent flag set then include the next frame
+    Effect* persistentEffectAfter = GetPersistentEffectOnModelStartingAtTime(_sequenceElements, model, endms);
+    if (persistentEffectAfter != nullptr) {
         endframe = persistentEffectAfter->GetEndTimeMS() / _seqData.FrameTime();
     }
 
     if (endframe >= (int)_seqData.NumFrames()) {
         endframe = _seqData.NumFrames() - 1;
     }
-    for (const auto& it : renderTree.data) {
+    for (const auto& it : _renderTree.data) {
         if (it->model->GetName() == model) {
 
-            for (const auto& it2 : renderProgressInfo) {
-                //we're going to render this model, abort whatever is rendering and accumulate the frames
+            for (const auto& it2 : _renderProgressInfo) {
                 RenderProgressInfo *rpi = it2;
                 if (std::find(rpi->restriction.begin(), rpi->restriction.end(), it->model) != rpi->restriction.end()) {
                     if (startframe > rpi->startFrame) {
@@ -1665,137 +1648,42 @@ void xLightsFrame::RenderEffectForModel(const std::string &model, int startms, i
     }
 }
 
-// RenderTimeSlice — defined in RenderUI.cpp (wx: ProgressBar, EnableSequenceControls, CallAfter)
+RenderEngine::ExportedModelData RenderEngine::ExportModelData(const std::string& modelName, SequenceData& sourceData) {
+    ExportedModelData result;
 
-bool xLightsFrame::DoExportModel(unsigned int startFrame, unsigned int endFrame,
-                                  const std::string& model, const std::string& fn,
-                                  const std::string& fmt, bool doRender)
-{
-    if (endFrame == 0)
-        endFrame = _seqData.NumFrames();
+    Model* model = _ctx.GetModel(modelName);
+    if (model == nullptr)
+        return result;
 
-    Model* m = GetModel(model);
-    if (m == nullptr)
-        return false;
+    PixelBufferClass buffer(&_ctx);
+    buffer.InitBuffer(*model, 1, sourceData.FrameTime());
 
-    if (m->GetDisplayAs() == DisplayAsType::ModelGroup)
-        return false;
+    auto exportData = std::make_unique<SequenceData>();
+    exportData->init(model->GetActChanCount(), sourceData.NumFrames(), sourceData.FrameTime(), false);
 
-    std::string filename(fn);
-    std::string format(fmt);
-
-    auto sw = std::chrono::steady_clock::now();
-    std::string Out3 = format.substr(0, 3);
-
-    if (Out3 == "LSP") {
-        filename = filename + "_USER";
-    }
-    std::filesystem::path oName(filename);
-
-    if (oName.parent_path().empty()) {
-        oName = std::filesystem::path(CurrentDir.ToStdString()) / oName.filename();
-    }
-    std::string fullpath;
-
-    SetStatusText(std::format("Starting Export for {} - {}", format, Out3));
-    wxYield();
-
-    Element* el = _sequenceElements.GetElement(model);
-    if (el == nullptr)
-        return false;
-    RenderJob* job = new RenderJob(dynamic_cast<ModelElement*>(el), _seqData, this, this);
-    assert(job != nullptr);
-    SequenceData* data = job->createExportBuffer();
-    assert(data != nullptr);
-    int cpn = job->getBuffer()->GetChanCountPerNode();
-
-    if (doRender) {
-        RenderAll();
-        // Wait for any in-progress render to complete
-        while (mRendering) {
-            wxYield();
-        }
-    }
-    Model* m2 = GetModel(model);
-    // firstChan is the absolute 0-based channel of node 0; subtract it from nstart
-    // so that node data is packed at the start of the export buffer (index 0).
-    int firstChan = m2->NodeStartChannel(0);
-    for (size_t frame = 0; frame < _seqData.NumFrames(); ++frame) {
-        for (size_t x = 0; x < job->getBuffer()->GetNodeCount(); ++x) {
-            int ostart = m2->NodeStartChannel(x);
+    int firstChan = model->NodeStartChannel(0);
+    for (size_t frame = 0; frame < sourceData.NumFrames(); ++frame) {
+        for (size_t x = 0; x < buffer.GetNodeCount(); ++x) {
+            int ostart = model->NodeStartChannel(x);
             int nstart = ostart - firstChan;
-            job->getBuffer()->SetNodeChannelValues(x, &_seqData[frame][ostart]);
-            job->getBuffer()->GetNodeChannelValues(x, &((*data)[frame][nstart]));
+            buffer.SetNodeChannelValues(x, &sourceData[frame][ostart]);
+            buffer.GetNodeChannelValues(x, &((*exportData)[frame][nstart]));
         }
     }
-    delete job;
 
-    if (Out3 == "Lcb") {
-        oName.replace_extension(".lcb");
-        fullpath = oName.string();
-        int lcbVer = 1;
-        if (format.find("S5") != std::string::npos) {
-            lcbVer = 2;
-        }
-        WriteLcbFile(fullpath, data->NumChannels(), startFrame, endFrame, data, lcbVer, cpn);
-    } else if (Out3 == "Vir") {
-        oName.replace_extension(".vir");
-        fullpath = oName.string();
-        WriteVirFile(fullpath, data->NumChannels(), startFrame, endFrame, data);
-    } else if (Out3 == "LSP") {
-        oName.replace_extension(".xml");
-        fullpath = oName.string();
-        WriteLSPFile(fullpath, data->NumChannels(), startFrame, endFrame, data, cpn);
-    } else if (Out3 == "HLS") {
-        oName.replace_extension(".hlsnc");
-        fullpath = oName.string();
-        WriteHLSFile(fullpath, data->NumChannels(), startFrame, endFrame, data);
-    } else if (Out3 == "FPP") {
-        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
-        oName.replace_extension(".eseq");
-        fullpath = oName.string();
-        bool v2 = format.find("Compressed") != std::string::npos;
-        WriteFalconPiModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), v2);
-    } else if (Out3 == "Com") {
-        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
-        oName.replace_extension(".mp4");
-        fullpath = oName.string();
-        WriteVideoModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), true);
-    } else if (Out3 == "Unc") {
-        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
-        fullpath = oName.string();
-        WriteVideoModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), false);
-    } else if (Out3 == "Min") {
-        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
-        oName.replace_extension(".bin");
-        fullpath = oName.string();
-        WriteMinleonNECModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model));
-    } else if (Out3 == "GIF") {
-        int stChan = m->GetNumberFromChannelString(m->ModelStartChannel);
-        oName.replace_extension(".gif");
-        fullpath = oName.string();
-        WriteGIFModelFile(fullpath, data->NumChannels(), startFrame, endFrame, data, stChan, data->NumChannels(), GetModel(model), _seqData.FrameTime());
-    }
-    float s = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw).count();
-    s /= 1000;
-    SetStatusText(std::format("Finished writing model: {} in {:.3f}s ", fullpath, s));
-
-    delete data;
-    EnableSequenceControls(true);
-
-    return true;
+    result.data = std::move(exportData);
+    result.chansPerNode = buffer.GetChanCountPerNode();
+    return result;
 }
 
-bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int layer, int period, SettingsMap& SettingsMap,
+bool RenderEngine::RenderEffectFromMap(bool suppress, Effect* effectObj, int layer, int period, SettingsMap& SettingsMap,
     PixelBufferClass& buffer, bool& resetEffectState,
     bool bgThread, RenderEvent* event)
 {
-    
     auto logger_render = spdlog::get("render");
 
-    // dont render disabled effects
     if (effectObj == nullptr) return false;
-    
+
     if (layer >= buffer.GetLayerCount()) {
         logger_render->error("Model {} Effect {} at frame {} tried to render on a layer {} that does not exist (Only {} found).",
             (const char*)buffer.GetModel()->GetName().c_str(), (const char*)effectObj->GetEffectName().c_str(), period, layer + 1, buffer.GetLayerCount());
@@ -1806,13 +1694,12 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
     if (buffer.IsRenderingDisabled(layer)) {
         return false;
     }
-    
+
     if (buffer.BufferForLayer(layer, -1).BufferHt == 0 || buffer.BufferForLayer(layer, -1).BufferWi == 0) {
         return false;
     }
 
     if (buffer.GetModel() != nullptr && buffer.GetModel()->GetNodeCount() == 0) {
-        // this happens with custom models with no nodes defined
         if (buffer.BufferForLayer(layer, 0).curEffStartPer == period) {
             logger_render->warn("Model {} has no nodes so skipping rendering.", (const char*)buffer.GetModel()->GetName().c_str());
         }
@@ -1829,20 +1716,14 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
     if (effectObj != nullptr) {
         eidx = effectObj->GetEffectIndex();
 
-        // color masks use the underlying model color to ensure backgrounds show what it will really look like
-        // need to do it every render as effects can move around
         const Model* m = buffer.GetModel();
-
         if (m == nullptr) {
-            // this could be a strand or node
-            m = GetModel(buffer.GetModelName());
+            m = _ctx.GetModel(buffer.GetModelName());
         }
 
         if (m != nullptr) {
             if (m->GetStringType().compare(0, 12, "Single Color") == 0 || m->GetStringType() == "Node Single Color") {
                 colorMask = buffer.GetNodeMaskColor(0);
-
-                // If black ... then dont mask
                 if (colorMask == xlBLACK) {
                     colorMask = xlColor::NilColor();
                 }
@@ -1852,12 +1733,11 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
     }
 
     if (eidx >= 0) {
-        RenderableEffect* reff = effectManager.GetEffect(eidx);
+        RenderableEffect* reff = _ctx.GetEffectManager().GetEffect(eidx);
 
         if (reff) {
             RenderBuffer* b = &buffer.BufferForLayer(layer, -1);
             if (b == nullptr) {
-                // this is bad nothing will work
                 logger_render->warn("render on model {} layer {} effect {} from {}ms returned no buffer ... skipping rendering.", (const char*)buffer.GetModelName().c_str(), layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS());
             }
             else {
@@ -1872,36 +1752,29 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
 
                     std::unique_lock<std::mutex> lock(event->mutex);
 
-                    std::unique_lock<std::mutex> qlock(renderEventLock);
-                    mainThreadRenderEvents.push(event);
+                    std::unique_lock<std::mutex> qlock(_renderEventLock);
+                    _mainThreadRenderEvents.push(event);
                     qlock.unlock();
 
-                    CallAfter(&xLightsFrame::RenderMainThreadEffects);
+                    if (_onCallAfterRenderMainThread) _onCallAfterRenderMainThread();
                     if (event->signal.wait_for(lock, std::chrono::seconds(10)) == std::cv_status::no_timeout) {
                         retval = event->returnVal == 1;
                     }
                     else {
                         logger_render->warn("HELP!!!!   Frame #{} render on model {} ({}x{}) layer {} effect {} from {}ms (#{}) to {}ms (#{}) timed out 10 secs.", b->curPeriod, (const char*)buffer.GetModelName().c_str(), b->BufferWi, b->BufferHt, layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS(), b->curEffStartPer, effectObj->GetEndTimeMS(), b->curEffEndPer);
-                        printf("HELP!!!!   Frame #%d render on model %s (%dx%d) layer %d effect %s from %dms (#%d) to %dms (#%d) timed out 10 secs.\n", b->curPeriod, (const char*)buffer.GetModelName().c_str(), b->BufferWi, b->BufferHt, layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS(), b->curEffStartPer, effectObj->GetEndTimeMS(), b->curEffEndPer);
 
-                        // Give it one more chance
                         if (event->signal.wait_for(lock, std::chrono::seconds(60)) == std::cv_status::no_timeout) {
                             retval = event->returnVal == 1;
                         }
                         else {
                             logger_render->warn("DOUBLE HELP!!!!   Frame #{} render on model {} ({}x{}) layer {} effect {} from {}ms (#{}) to {}ms (#{}) timed out 70 secs.", b->curPeriod, (const char*)buffer.GetModelName().c_str(), b->BufferWi, b->BufferHt, layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS(), b->curEffStartPer, effectObj->GetEndTimeMS(), b->curEffEndPer);
-                            printf("DOUBLE HELP!!!!   Frame #%d render on model %s (%dx%d) layer %d effect %s from %dms (#%d) to %dms (#%d) timed out 70 secs.\n", b->curPeriod, (const char*)buffer.GetModelName().c_str(), b->BufferWi, b->BufferHt, layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS(), b->curEffStartPer, effectObj->GetEndTimeMS(), b->curEffEndPer);
                         }
                     }
                     if (period % 10 == 0) {
-                        //constantly putting stuff on CallAfter can result in the main
-                        //dispatch thread never being able to empty the CallAfter
-                        //queue and thus effectively blocking.   We'll yield periodically to
-                        //allow the main thread to hopefully continue
                         std::this_thread::yield();
 
-                        // After yield who knows what may or may not be valid so we need to revalidate it
-                        if (!_sequenceElements.IsValidEffect(event->effect)) {
+                        SequenceElements& seqElements = _ctx.GetSequenceElements();
+                        if (!seqElements.IsValidEffect(event->effect)) {
                             logger_render->error("In RenderEffectFromMap after Yield() call: effect is no longer valid (expected during abort/delete).");
                         }
                     }
@@ -1915,7 +1788,6 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
                             RenderBuffer* oldBuffer = nullptr;
                             RenderBuffer* newBuffer = nullptr;
 
-                            // if we are suppressing then create a fake render buffer
                             if (suppress) {
                                 newBuffer = new RenderBuffer(*rb);
                                 oldBuffer = rb;
@@ -1936,7 +1808,6 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
                                 reff->Render(effectObj, SettingsMap, *rb);
                             }
 
-                            // Log slow render frames ... this takes time but at this point it is already slow
                             auto swElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw).count();
                             if (swElapsed > 150) {
                                 logger_render->info("Frame #{} render on model {} ({}x{}) layer {} effect {} from {}ms (#{}) to {}ms (#{}) took more than 150 ms => {}ms.", rb->curPeriod, (const char*)buffer.GetModelName().c_str(), rb->BufferWi, rb->BufferHt, layer, (const char*)reff->Name().c_str(), effectObj->GetStartTimeMS(), rb->curEffStartPer, effectObj->GetEndTimeMS(), rb->curEffEndPer, swElapsed);
@@ -1959,8 +1830,6 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
                             parallel_for(0, bufCnt, [&f](int x) {f(x); }, 1, &PER_MODEL_POOL);
                         }
                         else {
-                            // if we are not on the bgThread, then assume this effect cannot render on background threads
-                            // and thus cannot be done in parallel
                             for (int x = 0; x < bufCnt; x++) {
                                 f(x);
                             }
@@ -1982,3 +1851,12 @@ bool xLightsFrame::RenderEffectFromMap(bool suppress, Effect* effectObj, int lay
     }
     return retval;
 }
+
+void RenderEngine::OnRenderJobComplete(const std::string& modelName) {
+    if (_onRenderJobComplete) _onRenderJobComplete(modelName);
+}
+
+void RenderEngine::OnAllRenderJobsComplete() {
+    if (_onAllRenderJobsComplete) _onAllRenderJobsComplete();
+}
+

@@ -10,16 +10,18 @@
  * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
  **************************************************************/
 
+#include <string>
 
-namespace DrawGLUtils
-{
-#define LOG_GL_ERROR() DrawGLUtils::LogGLError(__FILE__, __LINE__)
-#define LOG_GL_ERRORV(a) a; DrawGLUtils::LogGLError(__FILE__, __LINE__, #a)
-#define IGNORE_GL_ERRORV(a) a; glGetError()
-
-    bool LoadGLFunctions();
-    void DoLogGLError(const char* file, int line, const char* msg); // always logs
-    void LogGLError(const char* file, int line, const char* msg = nullptr);
-    void SetupDebugLogging();
-}
-
+// Core-safe data struct for layout group serialization.
+// Populated from LayoutGroup* at the UI boundary.
+struct LayoutGroupData {
+    std::string name;
+    std::string backgroundImage;
+    int backgroundBrightness = 100;
+    int backgroundAlpha = 100;
+    bool backgroundScaled = false;
+    int posX = 0;
+    int posY = 0;
+    int paneWidth = 0;
+    int paneHeight = 0;
+};

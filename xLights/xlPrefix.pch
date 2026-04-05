@@ -1,3 +1,9 @@
+// wxWidgets macOS headers reference NSOpenGLContext/NSOpenGLPixelFormat which
+// are deprecated since macOS 10.14.  Suppress globally since we use Metal.
+#ifdef __APPLE__
+#define GL_SILENCE_DEPRECATION
+#endif
+
 #ifdef __cplusplus
 #ifndef NO_PCH
 
@@ -19,6 +25,11 @@
 #include <cstdlib>
 #include <sstream>
 
+#include <pugixml.hpp>
+#include <log.h>
+
+
+/*
 #include <wx/wx.h>
 #include <wx/config.h>
 #include <wx/dir.h>
@@ -48,9 +59,6 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 
-#include <pugixml.hpp>
-#include <log.h>
-
 #include "Color.h"
 #include "UtilFunctions.h"
 #include "ui/wxUtilities.h"
@@ -60,5 +68,7 @@
 #include "models/Model.h"
 #include "effects/RenderableEffect.h"
 
+*/
+ 
 #endif
 #endif
