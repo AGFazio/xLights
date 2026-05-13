@@ -2307,6 +2307,7 @@ void PixelBufferClass::SetLayerSettings(int layer, const SettingsMap& settingsMa
         } else {
             inf->modelBuffers = nullptr;
         }
+        PrecomputeLayerMergeMaps(layer);
     }
 }
 
@@ -2339,77 +2340,181 @@ uint32_t PixelBufferClass::BufferCountForLayer(int layer) {
 }
 
 void PixelBufferClass::UnMergeBuffersForLayer(int layer) {
-    
     if (layers[layer]->modelBuffers) {
-        // get all the data
-        xlColor color;
-        int nc = 0;
-
         GPURenderUtils::waitForRenderCompletion(&layers[layer]->buffer);
 
-        for (const auto& modelBuffer : *(layers[layer]->modelBuffers)) {
-            for (const auto& mbnode : modelBuffer->Nodes) {
-                if ((size_t)nc < layers[layer]->buffer.Nodes.size()) {
-                    auto& node = layers[layer]->buffer.Nodes[nc];
-                    layers[layer]->buffer.GetPixel(node->Coords[0].bufX, node->Coords[0].bufY, color);
-                    for (const auto& coord : mbnode->Coords) {
-                        modelBuffer->SetPixel(coord.bufX, coord.bufY, color);
-                    }
-                    nc++;
-                } else {
-                    // Where this happens it is usually a sign that there is a bug in one of our models where it creates a different number of nodes depending on the render buffer size
-                    // To find the cause uncomment the model group function TestNodeInit and the call in PixelBuffer::SetLayerSettings
+        if (!layers[layer]->unmergePixelMap.empty()) {
+            const xlColor* srcPixels = layers[layer]->buffer.GetPixels();
+            for (size_t b = 0; b < layers[layer]->unmergePixelMap.size(); b++) {
+                xlColor* dstPixels = (*layers[layer]->modelBuffers)[b]->GetPixels();
+                for (const auto& [srcIdx, dstIdx] : layers[layer]->unmergePixelMap[b]) {
+                    dstPixels[dstIdx] = srcPixels[srcIdx];
+                }
+            }
+        } else {
+            xlColor color;
+            int nc = 0;
+            for (const auto& modelBuffer : *(layers[layer]->modelBuffers)) {
+                for (const auto& mbnode : modelBuffer->Nodes) {
+                    if ((size_t)nc < layers[layer]->buffer.Nodes.size()) {
+                        auto& node = layers[layer]->buffer.Nodes[nc];
+                        layers[layer]->buffer.GetPixel(node->Coords[0].bufX, node->Coords[0].bufY, color);
+                        for (const auto& coord : mbnode->Coords) {
+                            modelBuffer->SetPixel(coord.bufX, coord.bufY, color);
+                        }
+                        nc++;
+                    } else {
+                        // Where this happens it is usually a sign that there is a bug in one of our models where it creates a different number of nodes depending on the render buffer size
+                        // To find the cause uncomment the model group function TestNodeInit and the call in PixelBuffer::SetLayerSettings
 
-                    if (layers[layer]->buffer.curPeriod == layers[layer]->buffer.curEffStartPer) {
-                        spdlog::warn("PixelBufferClass::UnMergeBuffersForLayer({}) Model '{}' Mismatch in number of nodes across layers.", layer, (const char*)modelName.c_str());
-                        for (int i = 0; i < GetLayerCount(); i++) {
-                            spdlog::warn("    Layer {} node count {} buffer '{}'", i, (int)layers[i]->buffer.Nodes.size(), (const char*)layers[i]->bufferType.c_str());
+                        if (layers[layer]->buffer.curPeriod == layers[layer]->buffer.curEffStartPer) {
+                            spdlog::warn("PixelBufferClass::UnMergeBuffersForLayer({}) Model '{}' Mismatch in number of nodes across layers.", layer, (const char*)modelName.c_str());
+                            for (int i = 0; i < GetLayerCount(); i++) {
+                                spdlog::warn("    Layer {} node count {} buffer '{}'", i, (int)layers[i]->buffer.Nodes.size(), (const char*)layers[i]->bufferType.c_str());
+                            }
+                            int mbnodes = 0;
+                            for (const auto& mb : *(layers[layer]->modelBuffers)) {
+                                mbnodes += mb->Nodes.size();
+                            }
+                            assert(false);
                         }
-                        int mbnodes = 0;
-                        for (const auto& mb : *(layers[layer]->modelBuffers)) {
-                            mbnodes += mb->Nodes.size();
-                        }
-                        assert(false);
                     }
                 }
             }
         }
     }
 }
+void PixelBufferClass::PrecomputeLayerMergeMaps(int layer) {
+    auto* inf = layers[layer];
+    inf->mergePixelMap.clear();
+    inf->unmergePixelMap.clear();
+
+    if (!inf->modelBuffers || inf->modelBuffers->empty()) return;
+
+    const int mainWi = inf->buffer.BufferWi;
+    const int mainHt = inf->buffer.BufferHt;
+    const size_t mainPixelCount = inf->buffer.GetPixelCount();
+    const size_t mainNodeCount = inf->buffer.Nodes.size();
+
+    inf->mergePixelMap.resize(inf->modelBuffers->size());
+    inf->unmergePixelMap.resize(inf->modelBuffers->size());
+
+    int nc = 0;
+    for (size_t b = 0; b < inf->modelBuffers->size(); b++) {
+        const auto& mb = (*inf->modelBuffers)[b];
+        const int srcWi = mb->BufferWi;
+        const int srcHt = mb->BufferHt;
+        const size_t srcPixelCount = mb->GetPixelCount();
+
+        for (const auto& node : mb->Nodes) {
+            if ((size_t)nc >= mainNodeCount) {
+                inf->mergePixelMap.clear();
+                inf->unmergePixelMap.clear();
+                return;
+            }
+            if (node->Coords.empty()) {
+                nc++;
+                continue;
+            }
+            const auto& c0 = node->Coords[0];
+            if (c0.bufX < 0 || c0.bufX >= srcWi || c0.bufY < 0 || c0.bufY >= srcHt) {
+                inf->mergePixelMap.clear();
+                inf->unmergePixelMap.clear();
+                return;
+            }
+            const int srcIdx = c0.bufY * srcWi + c0.bufX;
+            if ((size_t)srcIdx >= srcPixelCount) {
+                inf->mergePixelMap.clear();
+                inf->unmergePixelMap.clear();
+                return;
+            }
+
+            const auto& mainNode = inf->buffer.Nodes[nc];
+            if (mainNode->Coords.empty()) {
+                nc++;
+                continue;
+            }
+            const auto& mc0 = mainNode->Coords[0];
+            if (mc0.bufX < 0 || mc0.bufX >= mainWi || mc0.bufY < 0 || mc0.bufY >= mainHt) {
+                inf->mergePixelMap.clear();
+                inf->unmergePixelMap.clear();
+                return;
+            }
+            const int unmergeSourceIdx = mc0.bufY * mainWi + mc0.bufX;
+            if ((size_t)unmergeSourceIdx >= mainPixelCount) {
+                inf->mergePixelMap.clear();
+                inf->unmergePixelMap.clear();
+                return;
+            }
+
+            for (const auto& coord : mainNode->Coords) {
+                const int dstIdx = coord.bufY * mainWi + coord.bufX;
+                if (coord.bufX < 0 || coord.bufX >= mainWi || coord.bufY < 0 || coord.bufY >= mainHt || (size_t)dstIdx >= mainPixelCount) {
+                    inf->mergePixelMap.clear();
+                    inf->unmergePixelMap.clear();
+                    return;
+                }
+                inf->mergePixelMap[b].emplace_back(srcIdx, dstIdx);
+            }
+
+            for (const auto& coord : node->Coords) {
+                const int unMergeDstIdx = coord.bufY * srcWi + coord.bufX;
+                if (coord.bufX < 0 || coord.bufX >= srcWi || coord.bufY < 0 || coord.bufY >= srcHt || (size_t)unMergeDstIdx >= srcPixelCount) {
+                    inf->mergePixelMap.clear();
+                    inf->unmergePixelMap.clear();
+                    return;
+                }
+                inf->unmergePixelMap[b].emplace_back(unmergeSourceIdx, unMergeDstIdx);
+            }
+
+            nc++;
+        }
+    }
+}
+
 void PixelBufferClass::MergeBuffersForLayer(int layer) {
-    
     if (layers[layer]->modelBuffers) {
-        // get all the data
-        xlColor color;
-        int nc = 0;
         for (auto& modelBuffer : *(layers[layer]->modelBuffers)) {
             GPURenderUtils::commitRenderBuffer(modelBuffer.get());
         }
         for (auto& modelBuffer : *(layers[layer]->modelBuffers)) {
             GPURenderUtils::waitForRenderCompletion(modelBuffer.get());
         }
-        for (const auto& modelBuffer : *(layers[layer]->modelBuffers)) {
-            for (const auto& node : modelBuffer->Nodes) {
-                if ((size_t)nc < layers[layer]->buffer.Nodes.size()) {
-                    modelBuffer->GetPixel(node->Coords[0].bufX, node->Coords[0].bufY, color);
-                    for (const auto& coord : layers[layer]->buffer.Nodes[nc]->Coords) {
-                        layers[layer]->buffer.SetPixel(coord.bufX, coord.bufY, color);
-                    }
-                    nc++;
-                } else {
-                    // Where this happens it is usually a sign that there is a bug in one of our models where it creates a different number of nodes depending on the render buffer size
-                    // To find the cause uncomment the model group function TestNodeInit and the call in PixelBuffer::SetLayerSettings
 
-                    if (layers[layer]->buffer.curPeriod == layers[layer]->buffer.curEffStartPer) {
-                        spdlog::warn("PixelBufferClass::MergeBuffersForLayer({}) Model '{}' Mismatch in number of nodes across layers.", layer, (const char*)modelName.c_str());
-                        for (int i = 0; i < GetLayerCount(); i++) {
-                            spdlog::warn("    Layer {} node count {} buffer '{}'", i, (int)layers[i]->buffer.Nodes.size(), (const char*)layers[i]->bufferType.c_str());
+        if (!layers[layer]->mergePixelMap.empty()) {
+            xlColor* dstPixels = layers[layer]->buffer.GetPixels();
+            for (size_t b = 0; b < layers[layer]->mergePixelMap.size(); b++) {
+                const xlColor* srcPixels = (*layers[layer]->modelBuffers)[b]->GetPixels();
+                for (const auto& [srcIdx, dstIdx] : layers[layer]->mergePixelMap[b]) {
+                    dstPixels[dstIdx] = srcPixels[srcIdx];
+                }
+            }
+        } else {
+            xlColor color;
+            int nc = 0;
+            for (const auto& modelBuffer : *(layers[layer]->modelBuffers)) {
+                for (const auto& node : modelBuffer->Nodes) {
+                    if ((size_t)nc < layers[layer]->buffer.Nodes.size()) {
+                        modelBuffer->GetPixel(node->Coords[0].bufX, node->Coords[0].bufY, color);
+                        for (const auto& coord : layers[layer]->buffer.Nodes[nc]->Coords) {
+                            layers[layer]->buffer.SetPixel(coord.bufX, coord.bufY, color);
                         }
-                        int mbnodes = 0;
-                        for (const auto& mb : *(layers[layer]->modelBuffers)) {
-                            mbnodes += mb->Nodes.size();
+                        nc++;
+                    } else {
+                        // Where this happens it is usually a sign that there is a bug in one of our models where it creates a different number of nodes depending on the render buffer size
+                        // To find the cause uncomment the model group function TestNodeInit and the call in PixelBuffer::SetLayerSettings
+
+                        if (layers[layer]->buffer.curPeriod == layers[layer]->buffer.curEffStartPer) {
+                            spdlog::warn("PixelBufferClass::MergeBuffersForLayer({}) Model '{}' Mismatch in number of nodes across layers.", layer, (const char*)modelName.c_str());
+                            for (int i = 0; i < GetLayerCount(); i++) {
+                                spdlog::warn("    Layer {} node count {} buffer '{}'", i, (int)layers[i]->buffer.Nodes.size(), (const char*)layers[i]->bufferType.c_str());
+                            }
+                            int mbnodes = 0;
+                            for (const auto& mb : *(layers[layer]->modelBuffers)) {
+                                mbnodes += mb->Nodes.size();
+                            }
+                            assert(false);
                         }
-                        assert(false);
                     }
                 }
             }

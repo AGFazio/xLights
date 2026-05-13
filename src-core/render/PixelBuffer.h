@@ -187,6 +187,12 @@ private:
         std::vector<std::unique_ptr<RenderBuffer>>* modelBuffers = nullptr;
         std::vector<std::unique_ptr<RenderBuffer>> shallowModelBuffers;
         std::vector<std::unique_ptr<RenderBuffer>> deepModelBuffers;
+        // Precomputed flat pixel index pairs built once per effect in SetLayerSettings.
+        // mergePixelMap[b] = (srcIdx in modelBuffers[b], dstIdx in buffer) pairs.
+        // unmergePixelMap[b] = (srcIdx in buffer, dstIdx in modelBuffers[b]) pairs.
+        // Empty when modelBuffers is null or a node count mismatch was detected.
+        std::vector<std::vector<std::pair<int, int>>> mergePixelMap;
+        std::vector<std::vector<std::pair<int, int>>> unmergePixelMap;
         bool isChromaKey = false;
         xlColor chromaKeyColour = xlBLACK;
         xlColor sparklesColour = xlWHITE;
@@ -291,6 +297,7 @@ public:
     uint32_t BufferCountForLayer(int i);
     void UnMergeBuffersForLayer(int i);
     void MergeBuffersForLayer(int i);
+    void PrecomputeLayerMergeMaps(int layer);
 
     int GetLayerCount() const;
     void InitBuffer(const Model& pbc, int layers, int timing);
