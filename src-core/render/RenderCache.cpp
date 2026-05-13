@@ -16,6 +16,7 @@
 #include <log.h>
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <spdlog/fmt/fmt.h>
@@ -693,14 +694,25 @@ void RenderCacheItem::Delete()
     _renderCache->RemoveItem(this);
 }
 
+static bool IsExcessiveMemoryUsageThrottled(double multiplier) {
+    static std::chrono::steady_clock::time_point lastCheck{};
+    static bool lastResult = false;
+    auto now = std::chrono::steady_clock::now();
+    if (now - lastCheck >= std::chrono::seconds(1)) {
+        lastCheck = now;
+        lastResult = IsExcessiveMemoryUsage(multiplier);
+    }
+    return lastResult;
+}
+
 void RenderCacheItem::AddFrame(RenderBuffer* buffer)
 {
-    
+
     if (buffer == nullptr) {
         spdlog::get("render")->error("RenderCacheItem::AddFrame was passed a null buffer");
         return;
     }
-    
+
     if (buffer->GetPixelCount() == 0) {
         spdlog::get("render")->error("RenderCacheItem::AddFrame was passed a buffer with no pixels in it");
         return;
@@ -715,7 +727,7 @@ void RenderCacheItem::AddFrame(RenderBuffer* buffer)
     }
     // allow up to 3 times physical memory
     // This means the render cache will be swapped out ... but I think that is still better than re-rendering
-    if (IsExcessiveMemoryUsage(3.0)) {
+    if (IsExcessiveMemoryUsageThrottled(3.0)) {
         spdlog::get("render")->error("RenderCacheItem::AddFrame failed memory available test. This is a bad sign. Rendering will be really slow.");
         PurgeFrames();
         return;
