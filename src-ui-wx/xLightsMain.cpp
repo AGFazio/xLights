@@ -283,6 +283,7 @@ const wxWindowID xLightsFrame::ID_MNU_SHIFT_SELECTED_EFFECTS = wxNewId();
 const wxWindowID xLightsFrame::ID_MNU_COLOURREPLACE = wxNewId();
 const wxWindowID xLightsFrame::ID_MENUITEM13 = wxNewId();
 const wxWindowID xLightsFrame::ID_MNU_CHECKSEQ = wxNewId();
+const wxWindowID xLightsFrame::ID_MNU_CREATE_MAPPING_SEQ = wxNewId();
 const wxWindowID xLightsFrame::ID_MNU_CLEANUPFILE = wxNewId();
 const wxWindowID xLightsFrame::ID_MNU_PACKAGESEQUENCE = wxNewId();
 const wxWindowID xLightsFrame::ID_MNU_DOWNLOADSEQUENCES = wxNewId();
@@ -1093,6 +1094,8 @@ xLightsFrame::xLightsFrame(wxWindow* parent, int ab, wxWindowID id, bool renderO
     Menu1->AppendSeparator();
     MenuItemCheckSequence = new wxMenuItem(Menu1, ID_MNU_CHECKSEQ, _("C&heck Sequence"), wxEmptyString, wxITEM_NORMAL);
     Menu1->Append(MenuItemCheckSequence);
+    MenuItem_CreateMappingSeq = new wxMenuItem(Menu1, ID_MNU_CREATE_MAPPING_SEQ, _("Create Mapping Sequence"), _("Create a 10-second animation sequence with ON effects on all models, groups, and submodels for mapping."), wxITEM_NORMAL);
+    Menu1->Append(MenuItem_CreateMappingSeq);
     MenuItem_CleanupFileLocations = new wxMenuItem(Menu1, ID_MNU_CLEANUPFILE, _("Cleanup File Locations"), _("Moves all files into or under the show folder."), wxITEM_NORMAL);
     Menu1->Append(MenuItem_CleanupFileLocations);
     MenuItem_PackageSequence = new wxMenuItem(Menu1, ID_MNU_PACKAGESEQUENCE, _("Package &Sequence"), wxEmptyString, wxITEM_NORMAL);
@@ -1386,6 +1389,7 @@ xLightsFrame::xLightsFrame(wxWindow* parent, int ab, wxWindowID id, bool renderO
     Connect(ID_MNU_COLOURREPLACE, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItem_ColorReplaceSelected);
     Connect(ID_MENUITEM13, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnActionTestMenuItemSelected);
     Connect(ID_MNU_CHECKSEQ, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItemCheckSequenceSelected);
+    Connect(ID_MNU_CREATE_MAPPING_SEQ, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItem_CreateMappingSeqSelected);
     Connect(ID_MNU_CLEANUPFILE, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItem_CleanupFileLocationsSelected);
     Connect(ID_MNU_PACKAGESEQUENCE, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItem_PackageSequenceSelected);
     Connect(ID_MNU_DOWNLOADSEQUENCES, wxEVT_COMMAND_MENU_SELECTED, (wxObjectEventFunction)&xLightsFrame::OnMenuItem_DownloadSequencesSelected);

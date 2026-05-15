@@ -578,6 +578,7 @@ public:
     void OnmExportModelsMenuItemSelected(wxCommandEvent& event);
     void OnMenuItem_ViewLogSelected(wxCommandEvent& event);
     void OnMenuItemCheckSequenceSelected(wxCommandEvent& event);
+    void OnMenuItem_CreateMappingSeqSelected(wxCommandEvent& event);
     void OnMenuItem_Help_ForumSelected(wxCommandEvent& event);
     void OnMenuItem_Help_DownloadSelected(wxCommandEvent& event);
     void OnMenuItem_Help_ReleaseNotesSelected(wxCommandEvent& event);
@@ -805,6 +806,7 @@ public:
     static const wxWindowID ID_MNU_COLOURREPLACE;
     static const wxWindowID ID_MENUITEM13;
     static const wxWindowID ID_MNU_CHECKSEQ;
+    static const wxWindowID ID_MNU_CREATE_MAPPING_SEQ;
     static const wxWindowID ID_MNU_CLEANUPFILE;
     static const wxWindowID ID_MNU_PACKAGESEQUENCE;
     static const wxWindowID ID_MNU_DOWNLOADSEQUENCES;
@@ -977,6 +979,7 @@ public:
     wxMenuItem* MenuItemBackup;
     wxMenuItem* MenuItemBulkControllerUpload;
     wxMenuItem* MenuItemCheckSequence;
+    wxMenuItem* MenuItem_CreateMappingSeq;
     wxMenuItem* MenuItemColourDropper;
     wxMenuItem* MenuItemColours;
     wxMenuItem* MenuItemConvert;

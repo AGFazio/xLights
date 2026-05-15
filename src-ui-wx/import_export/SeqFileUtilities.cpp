@@ -91,6 +91,52 @@ void xLightsFrame::AddAllModelsToSequence()
     _sequenceElements.AddMissingModelsToSequence(models_to_add);
 }
 
+void xLightsFrame::OnMenuItem_CreateMappingSeqSelected(wxCommandEvent& event)
+{
+    NewSequence("", 10000, 50, "All Models");
+    if (CurrentSeqXmlFile == nullptr) return;
+
+    const std::string onSettings = "E_TEXTCTRL_Eff_On_Start=100,E_TEXTCTRL_Eff_On_End=100";
+    const std::string groupPalette    = "C_BUTTON_Palette1=" + (std::string)xlRED   + ",C_CHECKBOX_Palette1=1";
+    const std::string modelPalette    = "C_BUTTON_Palette1=" + (std::string)xlWHITE + ",C_CHECKBOX_Palette1=1";
+    const std::string submodelPalette = "C_BUTTON_Palette1=" + (std::string)xlBLUE  + ",C_CHECKBOX_Palette1=1";
+    const int effectEndMS = 5000;
+
+    size_t count = _sequenceElements.GetElementCount();
+    for (size_t i = 0; i < count; i++) {
+        Element* elem = _sequenceElements.GetElement(i);
+        if (elem->GetType() == ElementType::ELEMENT_TYPE_TIMING) continue;
+        if (elem->GetType() != ElementType::ELEMENT_TYPE_MODEL) continue;
+
+        Model* model = AllModels[elem->GetName()];
+        if (model == nullptr) continue;
+
+        bool isGroup = (dynamic_cast<ModelGroup*>(model) != nullptr);
+
+        EffectLayer* layer = elem->GetEffectLayer(0);
+        if (layer == nullptr) continue;
+
+        if (isGroup) {
+            layer->AddEffect(0, "On", onSettings, groupPalette, 0, effectEndMS, false, false);
+        } else {
+            layer->AddEffect(0, "On", onSettings, modelPalette, 0, effectEndMS, false, false);
+
+            ModelElement* modelElem = dynamic_cast<ModelElement*>(elem);
+            if (modelElem != nullptr) {
+                for (int s = 0; s < modelElem->GetSubModelCount(); s++) {
+                    SubModelElement* subElem = modelElem->GetSubModel(s);
+                    if (subElem == nullptr) continue;
+                    EffectLayer* subLayer = subElem->GetEffectLayer(0);
+                    if (subLayer == nullptr) continue;
+                    subLayer->AddEffect(0, "On", onSettings, submodelPalette, 0, effectEndMS, false, false);
+                }
+            }
+        }
+    }
+
+    mainSequencer->PanelEffectGrid->Refresh();
+}
+
 void xLightsFrame::NewSequence(const std::string& media, uint32_t durationMS, uint32_t frameMS, const std::string& defView)
 {
     if (readOnlyMode) {
