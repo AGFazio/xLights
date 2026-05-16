@@ -303,7 +303,89 @@ class SequencerViewModel {
     // model-list highlight doesn't clobber `previewModelName` (which
     // drives the Model Preview's single-model render mode and the
     // effect grid's row-tap state). Empty / nil = nothing selected.
+    // `layoutEditorSelectedModel` is the "primary" / most-recently-
+    // selected model — used by single-model UI (inline action bar,
+    // property panel, drag origin). The full selection set lives in
+    // `layoutEditorSelection`; the primary is conventionally
+    // `selection.first` of insertion order (the last model added).
     var layoutEditorSelectedModel: String? = nil
+    /// Phase J-4 (multi-select) — full selection set. Empty when
+    /// nothing's selected. Contains exactly `layoutEditorSelectedModel`
+    /// for single-select; multiple entries when the user has
+    /// activated edit mode and tapped / marqueed multiple models.
+    /// Align / distribute / multi-delete operate on this set.
+    var layoutEditorSelection: Set<String> = []
+    /// Phase J-4 (multi-select) — when true, taps on the canvas
+    /// toggle a model's membership in the selection set instead of
+    /// replacing the selection. Driven by a "Select" toggle in the
+    /// Layout Editor toolbar (Photos-style). Cleared on editor
+    /// close and on "Done" / explicit exit.
+    var layoutEditMode: Bool = false
+
+    /// Phase J-6 (sidebar canvas sync) — Group / ViewObject picks
+    /// in the sidebar. Independent of `layoutEditorSelectedModel`
+    /// so flipping tabs doesn't lose the model pick. The canvas
+    /// reads these via PreviewPaneView and tints / draws handles
+    /// accordingly.
+    var layoutEditorSelectedGroup: String? = nil
+    var layoutEditorSelectedObject: String? = nil
+
+    /// J-20.6 — active sidebar tab in the Layout Editor, mirrored
+    /// from `LayoutEditorView`'s `@State sidebarTab`. Lives on the
+    /// view model so the canvas / preview pane can gate picking
+    /// behaviour (e.g. don't fall through to view-object picks
+    /// when the user is on the Models tab — desktop only lets
+    /// you select objects from the Layout panel's object list).
+    /// String-typed to avoid pulling `LayoutSidebarTab` into the
+    /// view model module.
+    var layoutEditorActiveTab: String = "models"
+
+    /// J-13 — name of the Terrain view object currently in
+    /// heightmap edit mode. When non-nil, canvas taps modify
+    /// the terrain's PointData rather than selecting models.
+    var terrainEditTarget: String? = nil
+    /// J-13 — magnitude of the per-tap height change in world
+    /// units. Sign comes from `terrainEditRaise`.
+    var terrainEditDelta: Float = 1.0
+    /// J-13 — brush radius in screen points. 0 = single-point;
+    /// >0 applies a cosine falloff to neighbour grid points.
+    var terrainEditBrushPoints: CGFloat = 24.0
+    /// J-13 — true → tap-to-raise; false → tap-to-lower.
+    var terrainEditRaise: Bool = true
+
+    /// Set both primary + selection set to a single model (or
+    /// clear them both for nil/empty). All single-select call
+    /// sites should use this to keep the two fields in sync —
+    /// the primary IS the only entry of the selection set in
+    /// single-select mode.
+    func layoutSelectSingle(_ name: String?) {
+        if let n = name, !n.isEmpty {
+            layoutEditorSelectedModel = n
+            layoutEditorSelection = [n]
+        } else {
+            layoutEditorSelectedModel = nil
+            layoutEditorSelection.removeAll()
+        }
+    }
+    /// Phase J-3 (touch UX) — when non-nil, the Layout Editor is
+    /// in "creation mode": the next tap on the canvas creates a
+    /// new model of this type at the touch point. Cleared on
+    /// creation, on Cancel, or when the editor closes.
+    var layoutPendingNewModelType: String? = nil
+    /// Phase J-3 (touch UX) — when non-nil, a polyline-style model
+    /// (Poly Line / MultiPoint) is mid-creation and each follow-on
+    /// tap appends a vertex. Cleared by an explicit Done, Esc /
+    /// Return key, or when the editor closes. Set after the first
+    /// vertex of a polyline is placed; mutually exclusive with
+    /// `layoutPendingNewModelType` (which only governs the first
+    /// vertex / fresh-model placement).
+    var layoutPolylineInProgress: String? = nil
+    /// Phase J-4 (import) — file path of a pending .xmodel import.
+    /// When non-nil the Layout Editor is in placement mode; the
+    /// next tap on the canvas calls `bridge.importXmodelFromPath:`
+    /// with the touch as the placement target. Cleared after a
+    /// successful import or Cancel.
+    var layoutPendingImportPath: String? = nil
     /// True when the standalone Layout Editor scene is open. The
     /// Tools menu entry disables itself on a second press so we
     /// don't fight `WindowGroup`'s "focus existing instance"
@@ -710,24 +792,65 @@ class SequencerViewModel {
     /// deferred until the queue drains; media folders we still can't
     /// access after the re-grant pass are dropped (matches the previous
     /// silent-drop behavior in `iPadRenderContext::LoadShowFolder`).
+    ///
+    /// The actual work — obtainAccess pre-flight, the C++
+    /// iPadRenderContext::LoadShowFolder call, and the recursive .xsq scan
+    /// — runs on a detached task. Each step does synchronous file I/O that
+    /// blocks on iCloud download for evicted folders; on the main actor
+    /// (this method is called from the Done button in FolderConfigView and
+    /// from the launch-time .task in XLightsApp), the cumulative time was
+    /// exceeding the 5-second 0x8BADF00D watchdog deadline and getting
+    /// the app killed. The detach keeps the main actor free while the
+    /// load runs, then we hop back to apply state. The method returns
+    /// immediately; observers should watch `isShowFolderLoaded`.
     func loadShowFolder(path: String, mediaFolders: [String]) {
         showFolderPath = path
         mediaFolderPaths = mediaFolders
 
-        let showOK = XLSequenceDocument.obtainAccess(toPath: path, enforceWritable: false)
-        var stale: [(path: String, label: String)] = []
-        if !showOK {
-            stale.append((path, "show folder"))
-        }
-        for folder in mediaFolders where !XLSequenceDocument.obtainAccess(toPath: folder, enforceWritable: false) {
-            stale.append((folder, "media folder"))
-        }
+        Task.detached { [document, weak self] in
+            let showOK = XLSequenceDocument.obtainAccess(toPath: path, enforceWritable: false)
+            var stale: [(path: String, label: String)] = []
+            if !showOK {
+                stale.append((path, "show folder"))
+            }
+            for folder in mediaFolders where !XLSequenceDocument.obtainAccess(toPath: folder, enforceWritable: false) {
+                stale.append((folder, "media folder"))
+            }
 
-        if stale.isEmpty {
-            performLoadShowFolder(path: path, mediaFolders: mediaFolders)
-            return
-        }
+            if stale.isEmpty {
+                let loaded = document.loadShowFolder(path, mediaFolders: mediaFolders)
+                let scanned: [SequenceEntry] = loaded ? SequenceScanner.scan(showFolder: path) : []
+                await self?.applyLoadResult(loaded: loaded, sequenceFiles: scanned, path: path)
+                return
+            }
 
+            await self?.queueStaleRepromptsThenReload(stale: stale, path: path, mediaFolders: mediaFolders)
+        }
+    }
+
+    /// MainActor-side completion handler for a successful (or failed)
+    /// detached show-folder load. Lives separately from `loadShowFolder`
+    /// so the Task closure only needs to send Sendable values across the
+    /// actor boundary.
+    private func applyLoadResult(loaded: Bool, sequenceFiles: [SequenceEntry], path: String) {
+        self.isShowFolderLoaded = loaded
+        self.sequenceFiles = sequenceFiles
+        if loaded {
+            // L-1b: record successful loads so the folder picker can
+            // surface them as one-tap MRU entries on the next visit.
+            RecentShowFolders.record(path: path)
+        }
+    }
+
+    /// MainActor-side handler for the stale-bookmark branch: surfaces the
+    /// re-prompt sheets, then on completion re-enters `loadShowFolder` so
+    /// the second pass picks up the freshly-granted bookmarks (and detaches
+    /// again for its own heavy work).
+    private func queueStaleRepromptsThenReload(
+        stale: [(path: String, label: String)],
+        path: String,
+        mediaFolders: [String]
+    ) {
         for entry in stale {
             enqueueAccessReprompt(label: entry.label, originalPath: entry.path, pickPath: entry.path)
         }
@@ -736,8 +859,10 @@ class SequencerViewModel {
             // After the re-grant pass: if the show folder is still not
             // accessible (user skipped, picked a different folder),
             // leave the app un-loaded so ContentView keeps showing the
-            // setup affordance. Otherwise load with whatever media
-            // folders survived re-grant.
+            // setup affordance. Otherwise re-enter loadShowFolder, which
+            // detaches the heavy work again. Media folders the user
+            // still hasn't granted are dropped to match the previous
+            // silent-drop behavior in iPadRenderContext::LoadShowFolder.
             guard XLSequenceDocument.obtainAccess(toPath: path, enforceWritable: false) else {
                 self.isShowFolderLoaded = false
                 return
@@ -745,32 +870,23 @@ class SequencerViewModel {
             let surviving = mediaFolders.filter {
                 XLSequenceDocument.obtainAccess(toPath: $0, enforceWritable: false)
             }
-            self.performLoadShowFolder(path: path, mediaFolders: surviving)
+            self.loadShowFolder(path: path, mediaFolders: surviving)
         }
         runNextAccessReprompt()
     }
 
-    private func performLoadShowFolder(path: String, mediaFolders: [String]) {
-        isShowFolderLoaded = document.loadShowFolder(path, mediaFolders: mediaFolders)
-        if isShowFolderLoaded {
-            scanForSequenceFiles(at: path)
-            // L-1b: record successful loads so the folder picker can
-            // surface them as one-tap MRU entries on the next visit.
-            RecentShowFolders.record(path: path)
-        }
-    }
-
     /// Attempt to load the persisted show folder at app startup.
-    /// Returns true if a show folder was configured and loaded successfully.
-    /// May also return false transiently when a re-prompt is queued —
-    /// the queued operation finishes the load asynchronously once the
-    /// user re-picks the folder.
+    /// Returns true if a show folder is configured (and a load is being
+    /// kicked off). Since the load itself runs on a detached task,
+    /// `isShowFolderLoaded` is generally still false at the moment this
+    /// returns — callers should observe `viewModel.isShowFolderLoaded`
+    /// with `.onChange` to react to completion.
     @discardableResult
     func restorePersistedShowFolder() -> Bool {
         guard let path = FolderConfig.showFolder else { return false }
         let mediaFolders = FolderConfig.mediaFolders
         loadShowFolder(path: path, mediaFolders: mediaFolders)
-        return isShowFolderLoaded
+        return true
     }
 
     // MARK: - Access re-prompt queue
@@ -3018,25 +3134,34 @@ class SequencerViewModel {
         XLAIServices.shared().generateLyricTrack(audioPath: audioPath,
                                                    forService: service.name) { words, starts, ends, error in
 
-            // The bridge marshals this completion to the main
-            // queue, but Swift's type system sees it as a non-
-            // isolated @Sendable closure. Hop explicitly to
-            // MainActor so reloadRows / registerUndo / setActionName
-            // / completion can safely touch MainActor state.
-            Task { @MainActor in
-                if let error = error {
+            // The bridge dispatches every completion path to the
+            // main queue (XLAIServices.mm:371-418). Convert the
+            // bridged NSArrays into Sendable Swift value types
+            // *before* entering the MainActor isolation so Swift 6
+            // strict concurrency doesn't flag the closure capture
+            // as a data-race risk. NSArray<NSNumber> isn't Sendable
+            // under strict mode; [Int] / [String] are.
+            let safeWords: [String]? = words
+            let safeStarts: [Int]? = starts?.map { $0.intValue }
+            let safeEnds: [Int]? = ends?.map { $0.intValue }
+            let safeError: String? = error
+
+            MainActor.assumeIsolated {
+                if let error = safeError {
                     completion(error)
                     return
                 }
-                guard let words = words, let starts = starts, let ends = ends, !words.isEmpty else {
+                guard let words = safeWords, let starts = safeStarts, let ends = safeEnds,
+                      !words.isEmpty else {
                     completion("Recognizer returned no words. Try again with the vocals stem (Tools → Stem Separation) or a clearer audio source.")
                     return
                 }
 
-                let trackName = doc.addLyricTimingTrack(named: name,
-                                                         words: words,
-                                                         startMS: starts,
-                                                         endMS: ends)
+                let trackName = doc.addLyricTimingTrack(
+                    named: name,
+                    words: words,
+                    startMS: starts.map { NSNumber(value: $0) },
+                    endMS: ends.map { NSNumber(value: $0) })
                 if trackName.isEmpty {
                     completion("Couldn't create the lyric timing track.")
                     return
@@ -5263,6 +5388,42 @@ class SequencerViewModel {
         }
     }
 
+    /// B53/B54 follow-up — paste the clipboard at the given row,
+    /// auto-inserting layers when the clipboard spans more rows
+    /// than the destination element currently has. Mirrors desktop
+    /// `EffectsGrid::PasteModelEffectsWithLayers` (PR #6363): copy a
+    /// multi-layer model, paste at another model with fewer layers,
+    /// and the destination grows to fit. Uses `playPositionMS` as
+    /// the time anchor — same convention as ⌘V.
+    func pasteAtRow(rowIndex: Int) {
+        if clipboardEntries.isEmpty { syncClipboardFromPasteboard() }
+        guard !clipboardEntries.isEmpty,
+              rowIndex >= 0, rowIndex < rows.count else { return }
+
+        let maxRowOffset = clipboardEntries.map { $0.rowOffset }.max() ?? 0
+        if maxRowOffset > 0,
+           let destModel = document.rowModelName(at: Int32(rowIndex)) as String?,
+           !destModel.isEmpty {
+            // Count consecutive rows after `rowIndex` that still
+            // belong to the destination model. Submodels of the same
+            // parent share `rowModelName` so they're counted in this
+            // trail — desktop's smart-paste does the same.
+            var existingTrail = 0
+            var probe = rowIndex + 1
+            while probe < rows.count,
+                  ((document.rowModelName(at: Int32(probe)) as String?) ?? "") == destModel {
+                existingTrail += 1
+                probe += 1
+            }
+            let toInsert = maxRowOffset - existingTrail
+            if toInsert > 0 {
+                _ = insertLayersBelow(rowIndex: rowIndex, count: toInsert)
+            }
+        }
+
+        pasteEffect(rowIndex: rowIndex, startMS: playPositionMS)
+    }
+
     // MARK: - Lock / Disable
 
     func toggleLockSelected() {
@@ -5868,10 +6029,6 @@ class SequencerViewModel {
         }
 
         rows = newRows
-    }
-
-    private func scanForSequenceFiles(at path: String) {
-        sequenceFiles = SequenceScanner.scan(showFolder: path)
     }
 }
 

@@ -195,7 +195,9 @@ wxDECLARE_EVENT(EVT_EXPORT_MODEL, wxCommandEvent);
 wxDECLARE_EVENT(EVT_PLAY_MODEL, wxCommandEvent);
 wxDECLARE_EVENT(EVT_CUT_MODEL_EFFECTS, wxCommandEvent);
 wxDECLARE_EVENT(EVT_COPY_MODEL_EFFECTS, wxCommandEvent);
+wxDECLARE_EVENT(EVT_COPY_MODEL_EFFECTS_TO_MODELS, wxCommandEvent);
 wxDECLARE_EVENT(EVT_PASTE_MODEL_EFFECTS, wxCommandEvent);
+wxDECLARE_EVENT(EVT_PASTE_MODEL_EFFECTS_WITH_SUB_LAYERS, wxCommandEvent);
 wxDECLARE_EVENT(EVT_MODEL_SELECTED, wxCommandEvent);
 wxDECLARE_EVENT(EVT_PLAY_SEQUENCE, wxCommandEvent);
 wxDECLARE_EVENT(EVT_TOGGLE_PLAY, wxCommandEvent);
@@ -459,7 +461,7 @@ public:
     void ImportXLights(SequenceElements &se, const std::vector<Element *> &elements, const wxFileName &filename,
         bool modelBlendig = false, bool showModelBlending = false, bool allowAllModels = false, bool clearSrc = false);
     void ImportXLights(SequenceElements &se, const std::vector<Element *> &elements, SequencePackage &xsqPkg,
-        bool modelBlendig = false, bool showModelBlending = false, bool allowAllModels = false, bool clearSrc = false, std::string const& mapFile = std::string());
+        bool modelBlendig = false, bool showModelBlending = false, bool allowAllModels = false, bool clearSrc = false, std::string const& mapFile = std::string(), int sequenceDurationMS = 0);
     void ImportVix(const wxFileName &filename);
     void ImportHLS(const wxFileName &filename);
     void ImportLMS(const wxFileName &filename);
@@ -1944,7 +1946,9 @@ private:
     void PlayModel(wxCommandEvent& event);
     void CutModelEffects(wxCommandEvent& event);
     void CopyModelEffects(wxCommandEvent& event);
+    void CopyModelEffectsToModels(wxCommandEvent& event);
     void PasteModelEffects(wxCommandEvent& event);
+    void PasteModelEffectsWithSubModelLayers(wxCommandEvent& event);
     void ModelSelected(wxCommandEvent& event);
     void PlaySequence(wxCommandEvent& event);
     void PauseSequence(wxCommandEvent& event);
