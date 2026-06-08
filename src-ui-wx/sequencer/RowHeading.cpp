@@ -460,7 +460,8 @@ void RowHeading::mouseLeftDown(wxMouseEvent& event)
             wxPostEvent(GetParent(), eventRowHeaderChanged);
         } else {
             Row_Information_Struct* ri = mSequenceElements->GetVisibleRowInformation(mSelectedRow);
-            if (ri && ri->layerIndex == 0 && ri->strandIndex < 0 && ri->nodeIndex < 0 && !ri->submodel) {
+            if (ri && ri->layerIndex == 0 && ri->strandIndex < 0 && ri->nodeIndex < 0 && !ri->submodel
+                && e->GetType() != ElementType::ELEMENT_TYPE_TIMING) {
                 int view = mSequenceElements->GetCurrentView();
                 _rowDragSourceIdx = mSequenceElements->GetElementIndex(ri->element->GetFullName(), view);
                 _rowDragStart = event.GetPosition();
