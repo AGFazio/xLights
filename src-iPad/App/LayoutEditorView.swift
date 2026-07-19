@@ -3756,13 +3756,15 @@ struct LayoutEditorView: View {
             let bufferStyle = (d["bufferStyle"] as? String) ?? "Default"
             let strands     = (d["strands"] as? [String]) ?? []
             let subBuffer   = (d["subBuffer"] as? String) ?? ""
+            let dimmingBrightness = (d["dimmingBrightness"] as? Int) ?? 0
             out.append(SubModelEntry(
                 name: name,
                 isRanges: isRanges,
                 isVertical: isVertical,
                 bufferStyle: bufferStyle,
                 strands: strands,
-                subBuffer: subBuffer))
+                subBuffer: subBuffer,
+                dimmingBrightness: dimmingBrightness))
         }
         return out
     }
@@ -3781,6 +3783,7 @@ struct LayoutEditorView: View {
             d["bufferStyle"] = e.bufferStyle
             d["strands"]     = e.strands
             d["subBuffer"]   = e.subBuffer
+            d["dimmingBrightness"] = NSNumber(value: e.dimmingBrightness)
             arr.add(d)
         }
         let ok = viewModel.document.replaceSubModels(
@@ -6616,6 +6619,7 @@ struct SubModelEntry: Identifiable, Equatable {
     var bufferStyle: String
     var strands: [String]      // when isRanges
     var subBuffer: String      // when !isRanges
+    var dimmingBrightness: Int = 0   // brightness-only dimming curve; 0 = none
 }
 
 private struct SubModelListSheet: View {
@@ -7218,7 +7222,8 @@ private struct SubModelDetailEditor: View {
                entry.isVertical != snap.isVertical ||
                entry.bufferStyle != snap.bufferStyle ||
                entry.strands != snap.strands ||
-               entry.subBuffer != snap.subBuffer
+               entry.subBuffer != snap.subBuffer ||
+               entry.dimmingBrightness != snap.dimmingBrightness
     }
 
     /// Currently-highlighted nodes on the embedded preview —
@@ -7350,6 +7355,24 @@ private struct SubModelDetailEditor: View {
                     }
                     .pickerStyle(.menu)
                 }
+            }
+            Section(header: Text("Dimming"),
+                    footer: Text("Negative values dim the submodel (useful for creating shadows on a prop). 0 removes the dimming curve.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)) {
+                HStack {
+                    Text("Brightness")
+                    Spacer()
+                    Text("\(entry.dimmingBrightness)")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(
+                    value: Binding(
+                        get: { Double(entry.dimmingBrightness) },
+                        set: { entry.dimmingBrightness = Int($0.rounded()) }),
+                    in: -100...100,
+                    step: 1)
             }
             if entry.isRanges {
                 rangesSection
