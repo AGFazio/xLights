@@ -11,12 +11,17 @@ Issue Tracker is found here: www.github.com/xLightsSequencer/xLights/issues
 XLIGHTS/NUTCRACKER RELEASE NOTES
 ---------------------------------
 2026.14  July ??, 2026
+    -bug (dkulp)                 Media tab: picture-series animations (name-1.png..name-N.png) could not
+                                 be embedded, and SuperStar-imported scene animations silently failed to
+                                 embed (frames lost on save)
     -enh (dkulp)                 Render: frame-parallel windows now cover large single-model rows
                                  (matrices, megatrees, ...), not just groups
     -enh (dkulp)                 Render: Twinkle is frame-parallel Snapshottable (both render methods),
                                  letting group rows with Twinkle render frames concurrently
     -enh (dkulp)                 Render: Circles, Candle and Lines are frame-parallel Snapshottable
                                  (Circles radial modes are fully frame-parallel)
+    -bug (derwin12)              Windows/Linux: GPU Rendering preference was not restored on restart (#6712)
+    -bug (derwin12)              DMX Moving Head Adv / Servo 3D: editing ScaleX/Y/Z in the property grid no longer snaps it back to 1.0
     -bug (dkulp)                 Frame-parallel rendering: Candle (per-node) rendered wrong output in
                                  parallel windows on Metal/Vulkan (GPU path discarded the captured
                                  simulation and re-seeded every frame)
