@@ -184,6 +184,7 @@ public:
     //*)
 
     wxButton* Button_PlayAnim = nullptr;
+    wxCheckBox* CheckBox_EnableDimming = nullptr;
     wxSpinCtrl* Spin_AnimSpeed = nullptr;
     wxSpinCtrl* Spin_AnimTrail = nullptr;
 

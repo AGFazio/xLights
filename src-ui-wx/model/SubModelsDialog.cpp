@@ -379,6 +379,14 @@ SubModelsDialog::SubModelsDialog(wxWindow* parent, OutputManager* om) :
 
     TextCtrl_Name->Bind(wxEVT_KILL_FOCUS, &SubModelsDialog::OnTextCtrl_NameText_KillFocus, this);
 
+    CheckBox_EnableDimming = new wxCheckBox(Panel2, wxID_ANY, _("Enable Dimming Curves"));
+    CheckBox_EnableDimming->SetValue(true);
+    CheckBox_EnableDimming->SetToolTip(_("When unchecked, dimming curves set on this model's submodels are not applied when rendering. The set brightness values are kept."));
+    FlexGridSizer9->SetRows(0);
+    FlexGridSizer9->Insert(1, CheckBox_EnableDimming, 1, wxALL | wxEXPAND, 5);
+    FlexGridSizer9->RemoveGrowableRow(2);
+    FlexGridSizer9->AddGrowableRow(3);
+
     wxSize buttonSize = Button_ReverseRow->GetBestSize();
     FlexGridSizer5->SetMinSize(wxSize(buttonSize.GetWidth() + 30, -1));
 
@@ -651,6 +659,8 @@ void SubModelsDialog::Setup(Model *m)
 
     SetTitle(GetTitle() + " - " + m->GetName());
 
+    CheckBox_EnableDimming->SetValue(m->IsSubModelDimmingEnabled());
+
     RetrieveSubModelInfo(m);
 }
 
@@ -793,6 +803,8 @@ void SubModelsDialog::SaveSubModelInfoIntoThisModel(Model *m)
             xlights->RenameModel(m->GetName() + std::string("/") + (*a)->oldName.ToStdString(), m->GetName() + std::string("/") + (*a)->name.ToStdString());
         }
     }
+
+    m->SetSubModelDimmingEnabled(CheckBox_EnableDimming->IsChecked());
 
     std::vector<std::string> submodelOrder;
     for (auto it = _subModels.begin(); it != _subModels.end(); ++it)
