@@ -170,6 +170,14 @@ class LayoutPanel: public wxPanel
         bool _auiInitialized = false;
         void UpdateLayoutSplitter();
         int LeftPanelMinWidth() const; // 18% of splitter width, floor kMinPaneWidth
+        // ModelList pane has no caption/gripper bar; undocking it is instead
+        // initiated by dragging the Notebook_Objects tab strip (a tab, or the
+        // empty space beside the tabs).
+        bool _pendingListDrag = false;
+        wxPoint _listDragStart;
+        void OnObjectsNotebookLeftDown(wxMouseEvent& event);
+        void OnObjectsNotebookMotion(wxMouseEvent& event);
+        void OnObjectsNotebookLeftUp(wxMouseEvent& event);
 		wxTreeListCtrl* TreeListViewModels = nullptr;
         wxDataViewModel* TreeListMiewInternalModel = nullptr;
         wxTreeListCtrl* TreeListViewGroups = nullptr;

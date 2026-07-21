@@ -187,14 +187,24 @@ public:
     LayoutAuiManager(wxWindow* managed_wnd, unsigned int flags)
         : wxAuiManager(managed_wnd, flags) {
         SetArtProvider(new LayoutDockArt());
-        // wxAuiManager::SetManagedWindow (called from the base ctor above) now Bind()s the
-        // base mouse handlers on managed_wnd instead of PushEventHandler()ing the manager,
-        // so our overrides are no longer reached via the class event table. Bind them here:
-        // these are added after the base bindings, so they run first (dynamic handlers are
-        // LIFO), and each ends in event.Skip() so the base wxAuiManager handler still runs.
-        managed_wnd->Bind(wxEVT_LEFT_DOWN, &LayoutAuiManager::OnLeftDown, this);
-        managed_wnd->Bind(wxEVT_MOTION, &LayoutAuiManager::OnMotion, this);
-        managed_wnd->Bind(wxEVT_LEFT_UP, &LayoutAuiManager::OnLeftUp, this);
+        // wxAuiManager::SetManagedWindow (called from the base ctor above) still
+        // PushEventHandler()s the manager itself onto managed_wnd (the xLights fork's
+        // attempt to switch that to Bind() was reverted upstream), so wxAuiManager::OnLeftDown
+        // gets first crack at every mouse event on managed_wnd. For a CENTER-docked pane's
+        // caption/gripper it early-returns WITHOUT calling event.Skip() (hardcoded upstream to
+        // block center-pane dragging), which swallows the event before it could ever reach a
+        // handler bound directly on managed_wnd -- so binding our override there (as before)
+        // is dead code. Instead push a small forwarding handler AFTER the base ctor so it sits
+        // in FRONT of the AUI manager's own pushed handler and gets the event first; each of
+        // our methods ends in event.Skip() when it doesn't act, letting the AUI manager's
+        // normal handling run afterward.
+        m_centerDragInterceptor = new CenterDragInterceptor(this);
+        managed_wnd->PushEventHandler(m_centerDragInterceptor);
+    }
+
+    ~LayoutAuiManager() override {
+        GetManagedWindow()->RemoveEventHandler(m_centerDragInterceptor);
+        delete m_centerDragInterceptor;
     }
 
     wxAuiFloatingFrame* CreateFloatingFrame(wxWindow* parent, const wxAuiPaneInfo& p) override {
@@ -339,6 +349,25 @@ public:
             GetManagedWindow()->CallAfter(m_onPaneStateChanged);
         }
     }
+
+private:
+    // Forwards mouse events to the owning LayoutAuiManager from a position in
+    // front of it in managed_wnd's pushed-event-handler chain (see ctor comment).
+    class CenterDragInterceptor : public wxEvtHandler {
+    public:
+        explicit CenterDragInterceptor(LayoutAuiManager* owner) : m_owner(owner) {
+            Bind(wxEVT_LEFT_DOWN, &CenterDragInterceptor::OnLeftDown, this);
+            Bind(wxEVT_MOTION, &CenterDragInterceptor::OnMotion, this);
+            Bind(wxEVT_LEFT_UP, &CenterDragInterceptor::OnLeftUp, this);
+        }
+
+    private:
+        void OnLeftDown(wxMouseEvent& event) { m_owner->OnLeftDown(event); }
+        void OnMotion(wxMouseEvent& event) { m_owner->OnMotion(event); }
+        void OnLeftUp(wxMouseEvent& event) { m_owner->OnLeftUp(event); }
+        LayoutAuiManager* m_owner;
+    };
+    CenterDragInterceptor* m_centerDragInterceptor = nullptr;
 
 };
 
@@ -1048,11 +1077,13 @@ LayoutPanel::LayoutPanel(wxWindow* parent, xLightsFrame *xl, wxPanel* sequencer)
 
     FirstPanel->SetMinSize(wxSize(0, kPaneMinHeight));
     int listHeight = (msp > 0) ? msp : kListHeightFallback;
+    // No caption/gripper bar: undocking this pane is done by dragging the
+    // Notebook_Objects tab strip instead (see OnObjectsNotebookMotion).
     layout_mgr->AddPane(FirstPanel, wxAuiPaneInfo()
         .Name("ModelList")
         .Caption("Groups/Models List")
         .CaptionVisible(false)
-        .GripperTop(true)
+        .Gripper(false)
         .CloseButton(false)
         .Floatable(true)
         .Dockable(true)
@@ -1064,6 +1095,9 @@ LayoutPanel::LayoutPanel(wxWindow* parent, xLightsFrame *xl, wxPanel* sequencer)
         .BestSize(-1, listHeight)
         .FloatingSize(600, 1000)
         .MinSize(300, kPaneMinHeight));
+    Notebook_Objects->Bind(wxEVT_LEFT_DOWN, &LayoutPanel::OnObjectsNotebookLeftDown, this);
+    Notebook_Objects->Bind(wxEVT_MOTION, &LayoutPanel::OnObjectsNotebookMotion, this);
+    Notebook_Objects->Bind(wxEVT_LEFT_UP, &LayoutPanel::OnObjectsNotebookLeftUp, this);
 
     SettingsPaneContainer->SetMinSize(wxSize(0, kPaneMinHeight));
     layout_mgr->AddPane(SettingsPaneContainer, wxAuiPaneInfo()
@@ -1086,7 +1120,7 @@ LayoutPanel::LayoutPanel(wxWindow* parent, xLightsFrame *xl, wxPanel* sequencer)
         layout_mgr->LoadPerspective(auiPerspective);
     }
     // Always reapply settings that LoadPerspective overwrites via SafeSet()
-    layout_mgr->GetPane("ModelList").MinSize(300, kPaneMinHeight).CaptionVisible(false).Caption("Groups/Models List").GripperTop(true)
+    layout_mgr->GetPane("ModelList").MinSize(300, kPaneMinHeight).CaptionVisible(false).Gripper(false).Caption("Groups/Models List")
         .Floatable(true).CloseButton(false).TopDockable(true).BottomDockable(true).LeftDockable(false).RightDockable(false);
     layout_mgr->GetPane("ModelSettings").MinSize(0, kPaneMinHeight).CaptionVisible(true).Caption("Background Properties")
         .Floatable(true).CloseButton(false).TopDockable(false).BottomDockable(false).LeftDockable(false).RightDockable(false);
@@ -11718,6 +11752,60 @@ void LayoutPanel::HideFloatingPanes() {
     layout_mgr->Update();
 }
 
+// The ModelList pane has no caption/gripper bar (see its wxAuiPaneInfo setup) --
+// undocking it is instead initiated by dragging Notebook_Objects's tab strip (a
+// tab, or the blank area beside the tabs; clicks on the page content below the
+// tabs go to the page's own child window and never reach these handlers).
+void LayoutPanel::OnObjectsNotebookLeftDown(wxMouseEvent& event) {
+    _pendingListDrag = false;
+    if (layout_mgr != nullptr) {
+        wxAuiPaneInfo& pane = layout_mgr->GetPane(FirstPanel);
+        if (pane.IsOk() && pane.IsFloatable() && !pane.IsFloating()) {
+            _pendingListDrag = true;
+            _listDragStart = event.GetPosition();
+        }
+    }
+    event.Skip();
+}
+
+void LayoutPanel::OnObjectsNotebookMotion(wxMouseEvent& event) {
+    if (_pendingListDrag) {
+        if (!event.LeftIsDown()) {
+            _pendingListDrag = false;
+        } else {
+            wxPoint cur = event.GetPosition();
+            int dx = std::abs(cur.x - _listDragStart.x);
+            int dy = std::abs(cur.y - _listDragStart.y);
+            int tx = wxSystemSettings::GetMetric(wxSYS_DRAG_X, this);
+            int ty = wxSystemSettings::GetMetric(wxSYS_DRAG_Y, this);
+            static const int kDefaultDragThreshold = 4;
+            if (tx < 0) tx = kDefaultDragThreshold;
+            if (ty < 0) ty = kDefaultDragThreshold;
+            if (dx > tx || dy > ty) {
+                _pendingListDrag = false;
+                wxAuiPaneInfo& pane = layout_mgr->GetPane(FirstPanel);
+                if (pane.IsOk() && pane.IsFloatable() && !pane.IsFloating()) {
+                    // Translate the notebook-local click point into the AUI
+                    // managed window's coordinate space (where pane.rect lives)
+                    // to get an offset for StartPaneDrag.
+                    wxPoint screenPt = Notebook_Objects->ClientToScreen(cur);
+                    wxPoint managedPt = ModelPanelContainer->ScreenToClient(screenPt);
+                    wxPoint offset = managedPt - pane.rect.GetPosition();
+                    pane.Float();
+                    layout_mgr->Update();
+                    layout_mgr->StartPaneDrag(FirstPanel, offset);
+                }
+            }
+        }
+    }
+    event.Skip();
+}
+
+void LayoutPanel::OnObjectsNotebookLeftUp(wxMouseEvent& event) {
+    _pendingListDrag = false;
+    event.Skip();
+}
+
 void LayoutPanel::RestoreFloatingPanes() {
     if (layout_mgr == nullptr || _savedFloatingPerspective.empty()) return;
     layout_mgr->LoadPerspective(_savedFloatingPerspective);
@@ -11725,7 +11813,7 @@ void LayoutPanel::RestoreFloatingPanes() {
     // but preserve the visibility restored from the saved perspective.
     wxAuiPaneInfo& modelListPane = layout_mgr->GetPane("ModelList");
     if (modelListPane.IsOk()) {
-        modelListPane.MinSize(300, kPaneMinHeight).CaptionVisible(false).Caption("Groups/Models List").GripperTop(true)
+        modelListPane.MinSize(300, kPaneMinHeight).CaptionVisible(false).Gripper(false).Caption("Groups/Models List")
             .Floatable(true).CloseButton(false).TopDockable(true).BottomDockable(true).LeftDockable(false).RightDockable(false);
     }
     wxAuiPaneInfo& modelSettingsPane = layout_mgr->GetPane("ModelSettings");
