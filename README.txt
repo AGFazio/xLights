@@ -92,6 +92,10 @@ XLIGHTS/NUTCRACKER RELEASE NOTES
     -enh (nick)                   Media panel: offer "Bulk Find" to redirect a whole set of already-
                                  working media files to a new folder (e.g. a show copied to a new year),
                                  not just to fix ones that are currently missing
+    -enh (cybercop23)            Moved the Controllers tab to the Layout tab and separated Models and Groups into
+                                 their own tab, bringing the UI into parity with the iPad; added a controller
+                                 port/model selector to see the model(s)/string selected in the layout; added
+                                 right-click single controller FPPConnect functionality
     -change (dkulp)              Route the macOS serial baud-rate error and some render/headless diagnostics to the
                                  log instead of only stdout; headless now logs each sequence's render time
     -change (dkulp)              Render: sparkles are now placed by a frame-deterministic phase (per-node hash + frame)
