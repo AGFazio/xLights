@@ -1,0 +1,76 @@
+name: Claude Auto Review
+
+on:
+  push:
+    branches-ignore:
+      - master
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Find matching upstream PR
+        id: find_pr
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_PR_TOKEN }}
+        run: |
+          PR_JSON=$(gh pr list --repo xLightsSequencer/xLights \
+            --head "AGFazio:${GITHUB_REF_NAME}" --state open \
+            --json number,url --jq '.[0]')
+          if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "number=$(echo "$PR_JSON" | jq -r .number)" >> "$GITHUB_OUTPUT"
+          echo "url=$(echo "$PR_JSON" | jq -r .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code Review
+        if: steps.find_pr.outputs.found == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_PR_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: xLightsSequencer/xLights
+            PR NUMBER: ${{ steps.find_pr.outputs.number }}
+            PR URL: ${{ steps.find_pr.outputs.url }}
+
+            This branch is already checked out in the current working directory
+            (pushed from a fork). Review only the diff between this branch and the
+            PR's base branch for bugs.
+
+            Give special attention to any newly introduced persistent flag, switch,
+            or cached/derived value (a per-model or per-sequence bool, a UI control
+            mirroring a model property, a cached field rebuilt from other state).
+            For each one, trace every writer and every reader and check for:
+              - UI-state vs persisted-state mismatches: a validate/refresh function
+                silently resetting a control to a default that then gets saved,
+                overwriting a real user choice
+              - cross-thread access without synchronization: written from a UI/main
+                thread, read from a render/background thread, using a plain bool
+                instead of an atomic or a lock
+              - sibling flags not composed correctly: e.g. a per-model switch and a
+                per-sequence master switch both need to be checked everywhere "is
+                this enabled" is displayed or applied
+              - overlap/precedence comparators that don't handle the full value
+                range: e.g. "smallest wins" being correct for negative values but
+                wrong once positive values are also allowed
+              - missing re-application after a rebuild: state is destroyed and
+                recreated, but downstream derived/cached state depending on it is
+                never refreshed
+
+            Use `gh pr comment --repo xLightsSequencer/xLights ${{ steps.find_pr.outputs.number }}`
+            for top-level feedback. Only post GitHub comments - don't just print
+            findings without posting them.
+
+          claude_args: |
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
